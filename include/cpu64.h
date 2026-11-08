@@ -251,6 +251,15 @@ public:
     U64  instructionCount = 0;
     U64  recoverLastRip = (U64)-1;
     U8   recoverFaultsAtRip = 0;
+    // FD-205: identical-fault loop containment state (see
+    // BW64_FAULT_LOOP_LIMIT in ksignal.h). The last synchronously
+    // delivered fault (signal, faulting RIP, fault address) and how many
+    // times it has been delivered in a row. A different fault resets the
+    // count; the count is per thread (each thread has its own CPU64).
+    U32  faultLoopSig = 0;
+    U64  faultLoopRip = 0;
+    U64  faultLoopAddr = 0;
+    U32  faultLoopCount = 0;
     U64  jitWarmupCount = 0; // guest instructions retired before enabling JIT dispatch
 
     void run();

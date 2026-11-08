@@ -2454,6 +2454,30 @@ void bw64LogGuestFault32(const char* kind, KThread* thread, U32 address, U32 eip
     }
 }
 
+// FD-205: identical-fault loop containment. Counts consecutive deliveries
+// of the identical fault (same signal, same faulting instruction, same
+// fault address) on this thread; returns true once the count passes
+// BW64_FAULT_LOOP_LIMIT, in which case the caller must take its no-handler
+// path (end the process) instead of delivering again. A different fault
+// resets the count (see BW64_FAULT_LOOP_LIMIT in ksignal.h).
+bool KThread::faultLoopTripped(U32 signal, U32 faultRip, U32 faultAddr) {
+    if (signal == faultLoopSig && faultRip == faultLoopRip && faultAddr == faultLoopAddr) {
+        faultLoopCount++;
+    } else {
+        faultLoopSig = signal;
+        faultLoopRip = faultRip;
+        faultLoopAddr = faultAddr;
+        faultLoopCount = 1;
+    }
+    if (faultLoopCount > BW64_FAULT_LOOP_LIMIT) {
+        klog_fmt("BW64-FAIL fault-loop-contained pid=%d tid=%d sig=%u eip=0x%x addr=0x%x count=%u",
+                 (this->process) ? (int)this->process->id : -1,
+                 (int)this->id, signal, faultRip, faultAddr, faultLoopCount);
+        return true;
+    }
+    return false;
+}
+
 void KThread::seg_mapper(U32 address, bool readFault, bool writeFault, bool throwException) {
     // On-demand mapping for 32-bit Wine syscall_frame
     if (!this->process->is64Bit && address >= 0x76f000 && address < 0x770000) {
@@ -2468,7 +2492,10 @@ void KThread::seg_mapper(U32 address, bool readFault, bool writeFault, bool thro
             }
         }
     }
-    if (this->process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_IGN && this->process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_DFL) {
+    // FD-205: a runaway identical fault takes the no-handler path (end
+    // the process) instead of being delivered again.
+    U32 faultRip = this->cpu ? (this->cpu->seg[CS].address + this->cpu->eip.u32) : 0;
+    if (this->process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_IGN && this->process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_DFL && !faultLoopTripped(K_SIGSEGV, faultRip, address)) {
         this->process->sigActions[K_SIGSEGV].sigInfo[0] = K_SIGSEGV;
         this->process->sigActions[K_SIGSEGV].sigInfo[1] = 0;
         this->process->sigActions[K_SIGSEGV].sigInfo[2] = 1; // SEGV_MAPERR
@@ -2493,7 +2520,10 @@ void KThread::seg_mapper(U32 address, bool readFault, bool writeFault, bool thro
 
 // motorhead demo installer, tomb raider 3 demo will trigger this
 void KThread::seg_access(U32 address, bool readFault, bool writeFault, bool throwException) {
-    if (this->process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_IGN && this->process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_DFL) {
+    // FD-205: a runaway identical fault takes the no-handler path (end
+    // the process) instead of being delivered again.
+    U32 faultRip = this->cpu ? (this->cpu->seg[CS].address + this->cpu->eip.u32) : 0;
+    if (this->process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_IGN && this->process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_DFL && !faultLoopTripped(K_SIGSEGV, faultRip, address)) {
 
         this->process->sigActions[K_SIGSEGV].sigInfo[0] = K_SIGSEGV;
         this->process->sigActions[K_SIGSEGV].sigInfo[1] = 0;

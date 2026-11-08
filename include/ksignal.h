@@ -74,6 +74,28 @@
 #define K_FPE_FLTRES	6	/* floating point inexact result */
 #define K_FPE_FLTINV	7	/* floating point invalid operation */
 
+// FD-205: identical-fault loop containment. When a guest fault cannot be
+// handled, the guest's handler returns to the faulting instruction without
+// fixing the underlying fault, and the emulator re-delivers the identical
+// fault (same signal, same faulting instruction, same fault address)
+// forever -- observed past 28 million deliveries on 64-bit (a fetch fault
+// at one address) and past 5.5 million (a data fault), and as a 64-line
+// guest-memfault32 loop in a live session. BW64_FAULT_LOOP_LIMIT is how
+// many consecutive identical deliveries a thread may receive before the
+// fault is contained by ending the faulting thread's process -- the
+// Linux/Wine outcome for an unhandled fault -- instead of delivering
+// again. A different fault (different faulting instruction or address)
+// resets the count. Legitimate repeats at one site are 1-2 per site
+// (demand paging, guard-page and stack-growth faults each recur at a new
+// address), and a handler that fixes the fault and re-faults repeats a
+// handful of times, so 128 sits far above any legitimate recurrence and
+// far below the observed runaway counts. The launcher's pre-handshake
+// fault-loop trip (32 delivered faults from one thread) is a different,
+// stricter context: before the desktop handshake no fault should recur
+// at all. Shared by the 64-bit raiseSyncFault path and the 32-bit
+// seg_mapper/seg_access/prepareException paths.
+#define BW64_FAULT_LOOP_LIMIT 128
+
 #define K_SS_ONSTACK 1
 #define K_SS_DISABLE 4
 

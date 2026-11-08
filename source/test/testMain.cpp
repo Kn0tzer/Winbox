@@ -77,6 +77,7 @@ void testFutex64DispatchGuard();
 #ifndef BOXEDWINE_GUEST_X64
 void testMadvise32Syscall();
 void testFaultDelivery32();
+void testFaultLoopContainment32();
 void testPortIoFault32();
 void testFutexUnmapped32();
 void testFutexSharedUnmapped32();
@@ -230,6 +231,7 @@ void testSignal64AsyncFp();
 void testMemoryFault64Registers();
 void testMemoryFault64JitPoll();
 void testMemoryFault64RepPartial();
+void testFaultLoopContainment64();
 void testSigaltstack64Semantics();
 void testSigaltstack64Autodisarm();
 void testClone64AltstackReset();
@@ -353,6 +355,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testMemoryFault64Registers, "Test x64 data faults preserve interrupted state (K-M3)"},
     {testMemoryFault64JitPoll, "Test x64 cached block safepoint poll faults (K-M3)"},
     {testMemoryFault64RepPartial, "Test x64 REP string faults keep partial progress (K-M3)"},
+    {testFaultLoopContainment64, "Test x64 identical-fault loop is contained after the limit (FD-205)"},
     {testSigaltstack64Semantics, "Test x64 sigaltstack SS_ONSTACK query and on-stack EPERM"},
     {testSigaltstack64Autodisarm, "Test x64 sigaltstack SS_AUTODISARM disarm and sigreturn restore"},
     {testRaiseSyncFaultDeliveryLogged64, "Test x64 raiseSyncFault deliveries are logged at the delivery point (FD-14)"},
@@ -994,6 +997,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testWaitPid, "Test waitpid child selection"},
     {testMadvise32Syscall, "Test 32-bit madvise syscall effects"},
     {testFaultDelivery32, "Test 32-bit fault delivery without a guest handler"},
+    {testFaultLoopContainment32, "Test 32-bit identical-fault loop is contained after the limit (FD-205)"},
     {testPortIoFault32, "Test 32-bit port IO and int 0x99 fault delivery"},
     {testFutexUnmapped32, "Test 32-bit futex unmapped-address answers (D2)"},
     {testFutexSharedUnmapped32, "Test 32-bit shared futex unmapped-address answers (D2)"},
