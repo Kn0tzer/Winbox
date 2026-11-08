@@ -146,9 +146,29 @@ and was not used.
 
 ## Checking-service light checks
 
-Pipeline number and result: filled in after submission (see the
-follow-up commit on this branch). The branch tip submitted was the
-record + register-close commit.
+Checking-queue pipeline 66 (commit `360598698`, the record +
+register-close tip) adjudicated clean in the standard shape:
+citations exit 0 (352 rows, 232 MATCH / 14 MATCH-INHERITED, 0 drift);
+js-unit 352 passed / 2 failed — the known bare-checkout pair
+(`provenance-artifacts`, `runtime-completeness`); js-legacy exit 0
+(0 fail); native-main 706 tests, 0 FAILED; native-x64 121 tests, 0
+FAILED; run-native exit 0. Pipeline status "failure" is the standing
+shape, driven solely by js-unit's known pair. Evidence:
+`winbox-project/checks/evidence/pipeline-66/` (step logs; the
+publish-results step could not upload to MinIO — `XMinioStorageFull`,
+the store's disk threshold tripped — so the full per-step result files
+were not archived, only the harvested step summaries, which carry the
+figures above).
+
+The full JS unit suite run locally on this tree gave the same count
+(352 passed, 2 failed) with a different second failure:
+`binary-patch-registry` instead of `runtime-completeness`. That local
+failure is a staging artifact, not a regression: the test compares
+`dist/runtime/BUILD_INFO.json` against `web/runtime/BUILD_INFO.json`;
+this tree's staged `dist/` is symlinked to the live batch-12 build
+while `web/runtime/BUILD_INFO.json` is absent (the tree never ran a
+browser build), so the comparison throws. In the queue's bare checkout
+the test skips (no `dist/`), and pipeline 66 shows the known pair.
 
 ## Follow-ups (noted, not done)
 
