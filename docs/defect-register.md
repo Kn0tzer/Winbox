@@ -11278,6 +11278,8 @@ do not close the entry until they land.
   the mechanism (why this spawn attaches a rendering
   console host in the composed tree) named.
 
+- **FD-266 — After the fault-containment fix ends a faulting guest process, the session dies silently: the launcher never restarts it and never reports the death.** *(Medium — the containment itself works; the session should surface the death or restart. Filed by the batch-12 deploy lane, 2026-11-08.)* In the batch-12 live acceptance the consumer browser program hit the FD-205 fault loop three times (runs a1, a2, b3 — identical signature: guest-memfault32, addr `0xfffffd08`, eip `0x10584384`); each time the containment refused delivery at count 130 (`delivered=0`) and the faulting guest process ended, exactly as designed — but the session then sat silent until the 900 s timeout: the preserved consoles carry zero `restart` lines, their last entries are the lazy-fetch lines at ~23–26 s, and the timeout screenshots are nearly dark. In batch 11 the same loop died differently (a worker RangeError killed the page), so this silent-after-containment shape is new to batch 12. Closing terms: a session whose guest process dies via containment either restarts the guest or reports the failure, proven by a live consumer run that hits the loop and then either maps or fails loudly instead of timing out silently.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 **Status correction (2026-11-05, cleanup/status lane):** this table
