@@ -1536,22 +1536,42 @@
     // broken deployment cannot loop forever; after the bound the session is
     // left exactly as it would have been without this watch, with the
     // failure already surfaced on the session log.
-    function scheduleSessionBootRestart(reason) {
-        if (!SESSION || sessionBootRestartScheduled) return;
-        if (sessionReady()) return;
+    // A forced restart ({ force: true }) is for a start that is known dead
+    // (the fault-loop report): the guest process died before any window
+    // mapped, so the start failed even though the session context was
+    // captured. Demos launch with session=0 (SESSION false) and
+    // bw64_session_ready() goes true as soon as the context is captured, so
+    // the SESSION and sessionReady() guards would both wrongly veto a
+    // restart of a start that never mapped. A forced restart is gated only
+    // on "no window mapped yet" (stallWatchMapped, owned by the watchdog
+    // section below) and on the once-only flag. The doom path stays
+    // unforced: its SESSION/sessionReady guards are the proven §4.68 shape.
+    function scheduleSessionBootRestart(reason, opts) {
+        var force = !!(opts && opts.force);
+        if (sessionBootRestartScheduled) return;
+        if (force) {
+            if (stallWatchMapped) return;
+        } else {
+            if (!SESSION) return;
+            if (sessionReady()) return;
+        }
         sessionBootRestartScheduled = true;
         console.error("session: " + reason + " (boot attempt " +
             (sessionBootAttempt() + 1) + "); scheduling a clean session restart");
-        setTimeout(restartSessionBoot, SESSION_DOOM_CONFIRM_MS);
+        setTimeout(function () { restartSessionBoot(force, reason); }, SESSION_DOOM_CONFIRM_MS);
     }
     function observeSessionHealth(text) {
         if (!/The explorer process failed to start/.test(text)) return;
         scheduleSessionBootRestart("desktop initialization failed");
     }
-    function restartSessionBoot() {
-        if (!SESSION || sessionReady()) return;
+    function restartSessionBoot(force, reason) {
+        if (force) {
+            if (stallWatchMapped) return;
+        } else {
+            if (!SESSION || sessionReady()) return;
+        }
         if (sessionBootAttempt() >= SESSION_BOOT_MAX_RESTARTS) {
-            console.error("session: desktop initialization failed on the final boot attempt; not restarting again");
+            console.error("session: " + reason + " on the final boot attempt; not restarting again");
             return;
         }
         try {
@@ -1618,12 +1638,13 @@
     // handshake belong to the running session (a single delivered fault
     // there has been observed in a run that continued and finished);
     // faults spread across threads are not one thread looping.
-    // FD-266: the report also schedules the shared clean-boot restart
-    // (scheduleSessionBootRestart, in the self-healing block above), so a
-    // fault loop that kills the start is retried as a fresh boot instead
-    // of sitting dead until the harness gives up. The no-progress report
-    // keeps its report-only shape; its trigger is a stall, not a
-    // containment death.
+    // FD-266: the report also schedules the shared clean-boot restart,
+    // forced (the session guards do not apply to a start that never
+    // mapped: demos run with session=0, and the session context is
+    // captured before any window maps), so a fault loop that kills the
+    // start is retried as a fresh boot instead of sitting dead until the
+    // harness gives up. The no-progress report keeps its report-only
+    // shape; its trigger is a stall, not a containment death.
     //
     // FD-165: a second pre-handshake shape was captured on the shipped
     // batch-7 build (2026-11-05): no fault lines at all — the session's
@@ -1787,8 +1808,11 @@
         // guest process and nothing restarts the boot, so a pre-handshake
         // fault loop is treated as a failed start, the same class as the
         // desktop-init doom signal, and schedules the same bounded
-        // clean-boot restart.
-        scheduleSessionBootRestart("prehandshake fault loop");
+        // clean-boot restart. The restart is forced (see
+        // scheduleSessionBootRestart): demos run with session=0 and the
+        // session context is captured before any window maps, so the
+        // session guards would veto a restart of a start that never mapped.
+        scheduleSessionBootRestart("prehandshake fault loop", { force: true });
     }
     function stallWatchFinishDump() {
         var procs = stallWatchDumpProcs;

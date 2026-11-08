@@ -63,7 +63,7 @@ function makeWatchdog(params = {}) {
   let dumpCalls = 0;
   const state = {
     param: name => (name in params ? params[name] : null),
-    scheduleSessionBootRestart: reason => scheduledRestarts.push(reason),
+    scheduleSessionBootRestart: (reason, opts) => scheduledRestarts.push({ reason, force: !!(opts && opts.force) }),
     console: { log() {}, warn: (...a) => warns.push(a.join(' ')), error() {} },
     window: {
       bwRuntimeLog: line => runtimeLogs.push(line),
@@ -223,8 +223,8 @@ test('a pre-handshake delivered-fault loop is reported as a failed start, not an
   assert.deepEqual(w.reported, [], 'a burst of delivered faults is not yet a loop');
   w.print(faultLine({ count: 32 }));
   assert.equal(w.reported.length, 1);
-  assert.deepEqual(w.scheduledRestarts, ['prehandshake fault loop'],
-    'the fault-loop report schedules one clean-boot restart (FD-266)');
+  assert.deepEqual(w.scheduledRestarts, [{ reason: 'prehandshake fault loop', force: true }],
+    'the fault-loop report schedules one FORCED clean-boot restart (FD-266)');
   assert.match(w.reported[0], /did not finish starting/);
   assert.match(w.reported[0], /reported as failed/);
   const fail = w.runtimeLogs.find(l => l.startsWith('BW64-FAIL ') && l.includes('reason=prehandshake-fault-loop'));
