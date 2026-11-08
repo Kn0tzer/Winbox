@@ -1523,19 +1523,30 @@
     // left exactly as it would have been without this watch.
     var SESSION_BOOT_MAX_RESTARTS = 2;
     var SESSION_DOOM_CONFIRM_MS = 20000;
-    var sessionDoomRestartScheduled = false;
+    var sessionBootRestartScheduled = false;
     function sessionBootAttempt() {
         var n = parseInt(param("bwretry") || "0", 10);
         return isFinite(n) && n > 0 ? n : 0;
     }
-    function observeSessionHealth(text) {
-        if (!SESSION || sessionDoomRestartScheduled) return;
-        if (!/The explorer process failed to start/.test(text)) return;
+    // One clean-boot restart mechanism, shared by every pre-handshake death
+    // signal: the desktop-init doom signal below, and the stall watchdog's
+    // pre-handshake fault-loop report (FD-266). A fresh boot is a fresh
+    // draw (the fault loop that killed this boot recurs in only a minority
+    // of boots), and ?bwretry bounds the restarts so a systematically
+    // broken deployment cannot loop forever; after the bound the session is
+    // left exactly as it would have been without this watch, with the
+    // failure already surfaced on the session log.
+    function scheduleSessionBootRestart(reason) {
+        if (!SESSION || sessionBootRestartScheduled) return;
         if (sessionReady()) return;
-        sessionDoomRestartScheduled = true;
-        console.error("session: desktop initialization failed (boot attempt " +
+        sessionBootRestartScheduled = true;
+        console.error("session: " + reason + " (boot attempt " +
             (sessionBootAttempt() + 1) + "); scheduling a clean session restart");
         setTimeout(restartSessionBoot, SESSION_DOOM_CONFIRM_MS);
+    }
+    function observeSessionHealth(text) {
+        if (!/The explorer process failed to start/.test(text)) return;
+        scheduleSessionBootRestart("desktop initialization failed");
     }
     function restartSessionBoot() {
         if (!SESSION || sessionReady()) return;
@@ -1607,6 +1618,12 @@
     // handshake belong to the running session (a single delivered fault
     // there has been observed in a run that continued and finished);
     // faults spread across threads are not one thread looping.
+    // FD-266: the report also schedules the shared clean-boot restart
+    // (scheduleSessionBootRestart, in the self-healing block above), so a
+    // fault loop that kills the start is retried as a fresh boot instead
+    // of sitting dead until the harness gives up. The no-progress report
+    // keeps its report-only shape; its trigger is a stall, not a
+    // containment death.
     //
     // FD-165: a second pre-handshake shape was captured on the shipped
     // batch-7 build (2026-11-05): no fault lines at all — the session's
@@ -1765,6 +1782,13 @@
         if (window.bwRuntimeError) window.bwRuntimeError(
             "Windows did not finish starting: a background service thread faulted over and over before the desktop was ready, so this start is reported as failed instead of waiting forever. " +
             "The session log is preserved \u2014 open Show logs for the captured evidence, or retry.");
+        // FD-266: the report alone leaves a dead session sitting until the
+        // harness gives up. The containment that follows kills the faulting
+        // guest process and nothing restarts the boot, so a pre-handshake
+        // fault loop is treated as a failed start, the same class as the
+        // desktop-init doom signal, and schedules the same bounded
+        // clean-boot restart.
+        scheduleSessionBootRestart("prehandshake fault loop");
     }
     function stallWatchFinishDump() {
         var procs = stallWatchDumpProcs;

@@ -90,3 +90,21 @@ test('restarts are bounded: the final attempt does not navigate again', () => {
   assert.equal(last.navigations.length, 0);
   assert.ok(last.errors.some(t => /final boot attempt/.test(t)));
 });
+
+test('the shared scheduler schedules one restart with the caller reason (FD-266)', () => {
+  const h = harness();
+  runInNewContext('scheduleSessionBootRestart("prehandshake fault loop")', h.state);
+  assert.equal(h.timers.length, 1);
+  assert.equal(h.timers[0].ms, 20000);
+  assert.ok(h.errors.some(t => /prehandshake fault loop/.test(t)));
+  runInNewContext('scheduleSessionBootRestart("prehandshake fault loop")', h.state);
+  assert.equal(h.timers.length, 1, 'a second request must not schedule again');
+});
+
+test('the shared scheduler honors the session and readiness guards (FD-266)', () => {
+  for (const opts of [{ session: false }, { ready: true }]) {
+    const h = harness(opts);
+    runInNewContext('scheduleSessionBootRestart("prehandshake fault loop")', h.state);
+    assert.equal(h.timers.length, 0);
+  }
+});

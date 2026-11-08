@@ -53,6 +53,7 @@ function makeWatchdog(params = {}) {
   const section = launcher.slice(start, end);
   const forwarded = [];   // lines Module.print would forward to the session log
   const reported = [];    // bwRuntimeError messages
+  const scheduledRestarts = []; // scheduleSessionBootRestart calls (FD-266)
   const runtimeLogs = []; // direct bwRuntimeLog calls (the evidence flush + FAIL line)
   const warns = [];
   const timeouts = [];
@@ -62,6 +63,7 @@ function makeWatchdog(params = {}) {
   let dumpCalls = 0;
   const state = {
     param: name => (name in params ? params[name] : null),
+    scheduleSessionBootRestart: reason => scheduledRestarts.push(reason),
     console: { log() {}, warn: (...a) => warns.push(a.join(' ')), error() {} },
     window: {
       bwRuntimeLog: line => runtimeLogs.push(line),
@@ -89,7 +91,7 @@ function makeWatchdog(params = {}) {
   // watchdog's line hook lets it through.
   function print(line) { if (ctx.stallWatchLine(line)) forwarded.push(line); }
   return {
-    ctx, forwarded, reported, runtimeLogs, warns, timeouts, intervals, print,
+    ctx, forwarded, reported, scheduledRestarts, runtimeLogs, warns, timeouts, intervals, print,
     setShape: next => { shape = next; },
     setDumpRc: next => { dumpRc = next; },
     dumpCalls: () => dumpCalls,
@@ -221,6 +223,8 @@ test('a pre-handshake delivered-fault loop is reported as a failed start, not an
   assert.deepEqual(w.reported, [], 'a burst of delivered faults is not yet a loop');
   w.print(faultLine({ count: 32 }));
   assert.equal(w.reported.length, 1);
+  assert.deepEqual(w.scheduledRestarts, ['prehandshake fault loop'],
+    'the fault-loop report schedules one clean-boot restart (FD-266)');
   assert.match(w.reported[0], /did not finish starting/);
   assert.match(w.reported[0], /reported as failed/);
   const fail = w.runtimeLogs.find(l => l.startsWith('BW64-FAIL ') && l.includes('reason=prehandshake-fault-loop'));
@@ -230,6 +234,7 @@ test('a pre-handshake delivered-fault loop is reported as a failed start, not an
   // The report happens once even if the loop keeps printing.
   for (let i = 33; i <= 64; i++) w.print(faultLine({ count: i }));
   assert.equal(w.reported.length, 1);
+  assert.equal(w.scheduledRestarts.length, 1, 'the restart is scheduled once even if the loop keeps printing');
 });
 
 test('delivered faults after the handshake, or spread across threads, never convict the start', () => {
@@ -240,6 +245,16 @@ test('delivered faults after the handshake, or spread across threads, never conv
   const v = makeWatchdog();
   for (let t = 0; t < 4; t++) for (let i = 1; i <= 16; i++) v.print(faultLine({ tid: 76 + t, count: i }));
   assert.deepEqual(v.reported, [], 'faults spread across threads are not one thread looping');
+});
+
+test('a fault loop that never convicts never schedules a restart (FD-266)', () => {
+  const w = makeWatchdog();
+  w.boot();
+  for (let i = 1; i <= 40; i++) w.print(faultLine({ count: i }));
+  assert.deepEqual(w.scheduledRestarts, [], 'post-handshake faults belong to the running session');
+  const v = makeWatchdog();
+  for (let t = 0; t < 4; t++) for (let i = 1; i <= 16; i++) v.print(faultLine({ tid: 76 + t, count: i }));
+  assert.deepEqual(v.scheduledRestarts, [], 'faults spread across threads are not one thread looping');
 });
 
 test('a single delivered fault and undelivered faults never convict', () => {
