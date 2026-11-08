@@ -1,12 +1,12 @@
 {
  "version": 1,
- "release": "runtime-assets-20261107-fd168s3",
+ "release": "runtime-assets-20261107-batch11",
  "repository": "Kn0tzer/Boxedwine64",
  "archive": {
-  "name": "browser-runtime-20261107-fd168s3.tar",
-  "url": "https://github.com/Kn0tzer/Boxedwine64/releases/download/runtime-assets-20261107-fd168s3/browser-runtime-20261107-fd168s3.tar",
-  "bytes": 492369920,
-  "sha256": "352d0d9bb1acf32b08363af660c000a884b752b394b9db9373fd1ba09758b4d9"
+  "name": "browser-runtime-20261107-batch11.tar",
+  "url": "https://github.com/Kn0tzer/Boxedwine64/releases/download/runtime-assets-20261107-batch11/browser-runtime-20261107-batch11.tar",
+  "bytes": 493608960,
+  "sha256": "3159841dcfdbee493de2ff3f0b61e61a846303aad81294f60011fdb19b0c82e8"
  },
  "files": [
   {
@@ -16,13 +16,13 @@
   },
   {
    "path": "web/runtime/wine64.zip",
-   "bytes": 196048036,
-   "sha256": "4867cf758f2f42d4de850e3671088fb2183c2f54e2095400cb3cbcf5f6fb4c97"
+   "bytes": 196033613,
+   "sha256": "13f254e3c3a51449abfec2a3e4aba385e085f41ffee9ab53e9eb77260f2a271e"
   },
   {
    "path": "web/runtime/prefix64.zip",
-   "bytes": 19066808,
-   "sha256": "197251244ccb367f6a46c3fc8ec7fdaaa425891f75aa02113f27f1e3d3126b62"
+   "bytes": 19038913,
+   "sha256": "c344364aa6e2e60249cb60baf3ec7825d9cd366088c13ac838547e6d3e4725ca"
   },
   {
    "path": "web/runtime/glibc-rootfs32.zip",
@@ -31,8 +31,8 @@
   },
   {
    "path": "web/runtime/wine32.zip",
-   "bytes": 231315001,
-   "sha256": "aa2bb9d63bf03dca2275d64ec117dbb280b68b8eea456d54774738cefa46e070"
+   "bytes": 232594442,
+   "sha256": "8133274c06128250f94bb858c62fb2b12285b527606bf276674e20dd898c8d71"
   },
   {
    "path": "web/runtime/prefix32.zip",

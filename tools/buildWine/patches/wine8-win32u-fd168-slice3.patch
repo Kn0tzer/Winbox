@@ -30,7 +30,7 @@ index c25a5e9..230ee02 100644
 -@ stub NtGdiPolyPatBlt
 +@ stdcall NtGdiPolyPatBlt(long long ptr long long)
  @ stdcall NtGdiPolyPolyDraw(long ptr ptr long long)
- @ stub NtGdiPolyTextOutW
+ @ stdcall -syscall NtGdiPolyTextOutW(long ptr long)
  @ stdcall -syscall NtGdiPtInRegion(long long long)
 @@ -848,7 +848,7 @@
  @ stdcall -syscall NtUserDragDetect(long long long)
