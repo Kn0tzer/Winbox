@@ -10982,9 +10982,9 @@ do not close the entry until they land.
   strengthened check passes in a no-worklet run.
   The shipped, gated configuration is unaffected.
 
-- **FD-204 — Calling vkCmdBlitImage or vkCmdBlitImage2 wedges the guest in an endless delivered-fault loop.** *(High)* Measured 2026-11-07 by the vkcov coverage harness on a verified build of lane-vkgl-coverage's tip (wasm byte-identical to the shipped batch-10 build): with valid arguments (a 64x64 image, one blit region), vkCmdBlitImage never returned — the guest faulted fetching from an unmapped address (rip == addr, 0x700227500 in the captured run) and the same fault was redelivered past 22 million times without the guest's crash handler ever regaining control; the session was unrecoverable and the run had to be stopped from outside. Called live in the next run, vkCmdBlitImage2 wedged the same way (delivered data fault at a fixed rip, count past 1.2 million when stopped); vkCmdBlitImage2KHR is recorded on the same-code-path precedent, not individually measured. The harness now skips all three (recorded -2, crashed) so the coverage matrix can complete. Contrast the vkCmdCopyImage family, whose bridge exception the guest crash handler does contain (recorded -2, run continues). Closing terms: a guest calling any of the three blit entry points with valid arguments gets a normal return or a containable error, proven by a vkcov run with the skips removed. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-vk-20261107/console.log and test-results/bridge-coverage-vkgl-vk3-20261107/console.log (preserved on the lane tree) and docs/reports/vkgl-spec-coverage-20261106.md.
+- **FD-204 — Calling vkCmdBlitImage or vkCmdBlitImage2 wedges the guest in an endless delivered-fault loop. CLOSED 2026-11-08 — see CL-188.** *(High)* Measured 2026-11-07 by the vkcov coverage harness on a verified build of lane-vkgl-coverage's tip (wasm byte-identical to the shipped batch-10 build): with valid arguments (a 64x64 image, one blit region), vkCmdBlitImage never returned — the guest faulted fetching from an unmapped address (rip == addr, 0x700227500 in the captured run) and the same fault was redelivered past 22 million times without the guest's crash handler ever regaining control; the session was unrecoverable and the run had to be stopped from outside. Called live in the next run, vkCmdBlitImage2 wedged the same way (delivered data fault at a fixed rip, count past 1.2 million when stopped); vkCmdBlitImage2KHR is recorded on the same-code-path precedent, not individually measured. The harness now skips all three (recorded -2, crashed) so the coverage matrix can complete. Contrast the vkCmdCopyImage family, whose bridge exception the guest crash handler does contain (recorded -2, run continues). Closing terms: a guest calling any of the three blit entry points with valid arguments gets a normal return or a containable error, proven by a vkcov run with the skips removed. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-vk-20261107/console.log and test-results/bridge-coverage-vkgl-vk3-20261107/console.log (preserved on the lane tree) and docs/reports/vkgl-spec-coverage-20261106.md.
 
-- **FD-205 — A guest memory fault in some paths is redelivered forever instead of containing the faulting thread.** *(High)* Measured 2026-11-07 during the vkcov run phase: a call that faulted on a data read (addr 0x7002a0fa8 at rip 0x700223c5c in the captured run) was delivered past 5.5 million times at the identical rip/addr; the guest thread never died, the session never recovered, and the run had to be stopped from outside. The triggering call was the harness's vkGetDeviceProcAddr stub row — the real loader entry called with no arguments; that row's premise is false and the harness now skips it (and its vkGetInstanceProcAddr pair, on the pair precedent) — but the defect filed here is the emulator-side behaviour the row exposed: unbounded redelivery of a single fault. The same redelivery shape is what makes FD-204 session-fatal. Closing terms: a guest fault that cannot be handled terminates or suspends the faulting thread, or is surfaced as a session failure, instead of redelivering without bound; proven by a faulting guest call after which the session either continues or reports failure. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-vk2-20261107/console.log (preserved on the lane tree).
+- **FD-205 — A guest memory fault in some paths is redelivered forever instead of containing the faulting thread. CLOSED 2026-11-08 — see CL-189.** *(High)* Measured 2026-11-07 during the vkcov run phase: a call that faulted on a data read (addr 0x7002a0fa8 at rip 0x700223c5c in the captured run) was delivered past 5.5 million times at the identical rip/addr; the guest thread never died, the session never recovered, and the run had to be stopped from outside. The triggering call was the harness's vkGetDeviceProcAddr stub row — the real loader entry called with no arguments; that row's premise is false and the harness now skips it (and its vkGetInstanceProcAddr pair, on the pair precedent) — but the defect filed here is the emulator-side behaviour the row exposed: unbounded redelivery of a single fault. The same redelivery shape is what makes FD-204 session-fatal. Closing terms: a guest fault that cannot be handled terminates or suspends the faulting thread, or is surfaced as a session failure, instead of redelivering without bound; proven by a faulting guest call after which the session either continues or reports failure. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-vk2-20261107/console.log (preserved on the lane tree).
 
 - **FD-206 — Ten implemented Vulkan handlers answer VK_ERROR_INITIALIZATION_FAILED (-3) to the coverage harness's calls.** *(Medium)* Measured 2026-11-07 on the completed vkcov runs (two independent end-to-end runs with identical return codes): vkSetEvent, vkResetEvent, vkCmdSetEvent, vkCmdResetEvent, vkGetEventStatus (the whole event family), vkGetQueryPoolResults, vkFreeDescriptorSets, vkGetDeviceImageMemoryRequirements, vkGetPhysicalDeviceProperties2KHR, vkGetPhysicalDeviceImageFormatProperties2KHR. The harness's arguments are valid-ish by design (created objects, a begun command buffer, established state); per name, the fixing lane triages handler defect vs harness argument/state artifact, but the event family's uniform -3 across state the harness did establish is a functional failure on its face. Closing terms: each named handler returns a spec-correct result for the harness's call, or the register records the per-name reason its -3 is the correct answer. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-vk4-20261107/vkcov-results.json.
 
@@ -16552,6 +16552,36 @@ dead-start fix and needs composition care.
   checking-service verdict on the corrected tip,
   all recorded in
   `docs/reports/merge-batch11-20261107.md`.
+
+- **CL-188 — FD-204 closed: calling vkCmdBlitImage or vkCmdBlitImage2
+  wedges the guest in an endless delivered-fault loop.** Fixed on
+  branch `lane-fd204-fd205`, commit `0fb7827eb`: `Image::pixBytes`
+  is the image's total byte count (set by the bind sites on both
+  widths) but the copy family used it as bytes per pixel, so every
+  blit pixel was dropped and the call was a silent no-op returning
+  0. The copy family (CopyImage, CopyImage2, BlitImage, BlitImage2,
+  ResolveImage) now takes bytes-per-pixel from the format
+  (`fmt_bpp`). Proof: vkcov run with the blit skips removed on the
+  fixed build (wasm `1bd945d2...`) completes end to end (RESULT 0,
+  309 handlers); all three blit entry points return 0, zero pixel
+  drops, zero fault lines. The 2026-11-07 wedge itself did not
+  reproduce on the batch-11-based build; the FD-205 containment
+  bounds any recurrence. Record:
+  `docs/reports/fd204-fd205-fault-containment-20261108.md`.
+
+- **CL-189 — FD-205 closed: a guest memory fault in some paths is
+  redelivered forever instead of containing the faulting thread.**
+  Fixed on branch `lane-fd204-fd205`, commit `0fb7827eb`: after
+  `BW64_FAULT_LOOP_LIMIT` (128) identical deliveries (same signal,
+  faulting instruction, fault address) the fault is refused and the
+  faulting thread's process is ended (`K_SIGKILL`); 64-bit in
+  `raiseSyncFault`, 32-bit in `seg_mapper`/`seg_access`/
+  `prepareException` via `KThread::faultLoopTripped`. A different
+  fault resets the count. Proof: native tests
+  `testFaultLoopContainment64`/`testFaultLoopContainment32` pass
+  (containment trips at count 129); the vkcov fix run completes
+  with zero fault lines. Record:
+  `docs/reports/fd204-fd205-fault-containment-20261108.md`.
 
 ## Appendix — examined and deliberately NOT registered
 
