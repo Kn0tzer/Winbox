@@ -11135,6 +11135,28 @@ do not close the entry until they land.
   regenerate), proven by a repeat of the incident
   shape failing loudly instead of landing.
 
+- **FD-262 — The batch-11 composition's silent-failure
+  baseline for `syscall64.cpp` undercounted the
+  composed tree by two.** *(Low — test-baseline
+  accounting. Filed by the batch-11 merge lane,
+  2026-11-07.)* The hand-composed
+  `web/tests/suite/known-silent.json` entry took the
+  timing lane's figure (`unloggedErrno` 136) for the
+  merged file. Two pool lanes had each added two
+  unlogged `-EINVAL` returns to disjoint sites of
+  the same file — the timing lane's clock-validation
+  returns and the unfiled-gaps lane's vectored-read
+  signed-length returns — each reviewed and
+  baselined at +2 on its own branch. Scanner counts
+  per branch prove the arithmetic: integration 134,
+  each lane 136, the composed tree 138. The batch
+  gate's checking-service run (pipeline 59) failed
+  `no-silent-failure` on exactly this line; the
+  baseline is corrected to the measured 138. No
+  product code changes; the composition added and
+  hid no silent path.
+  CLOSED — see CL-187.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 **Status correction (2026-11-05, cleanup/status lane):** this table
@@ -16425,6 +16447,16 @@ dead-start fix and needs composition care.
   pipelines 36 and 39 adjudicated clean in the
   standard shape. Record:
   `docs/reports/timing-waits-20261107.md`.
+
+- **CL-187 — FD-262 closed.** Fixed on branch
+  `lane-merge-batch11` (commit `4dfcf63fe`). Proof:
+  the per-branch scanner counts (integration 134,
+  timing lane 136, unfiled-gaps lane 136, composed
+  tree 138), the `no-silent-failure` unit test
+  passing on the composed tree, and the
+  checking-service verdict on the corrected tip,
+  all recorded in
+  `docs/reports/merge-batch11-20261107.md`.
 
 ## Appendix — examined and deliberately NOT registered
 
