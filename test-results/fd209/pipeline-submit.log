@@ -1,0 +1,11 @@
+lane tip: 991db38cf5c229fdcdb4be209b775ef2bd08205c (lane-fd209)
+definition file already present at tip; submitting tip as-is
+remote: . Processing 1 references        
+remote: Processed 1 references in total        
+pushed to gitea ref checks/current
+source mount prepared at /home/ubuntu/winbox-project/checks/src
+pipeline created: #71 (commit 991db38cf5c229fdcdb4be209b775ef2bd08205c)
+pipeline #71 finished with status: failure
+step logs: /home/ubuntu/winbox-project/checks/evidence/pipeline-71/queue-logs/
+output files list: /home/ubuntu/winbox-project/checks/evidence/pipeline-71/minio-objects.txt
+pipeline exit status: failure

@@ -1,0 +1,3067 @@
+log: lazy game: mounting 5798 bytes from http://127.0.0.1:34981/__fixtures/fna-program.zip
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: wine64-launcher: loading 64-bit rootfs from ./
+log: loaded glibc-rootfs32.zip (4133733 bytes) into VFS
+log: loaded prefix32.zip (5978718 bytes) into VFS
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: lazy rootfs: wine64.zip will mount on demand (2 field(s))
+log: wine64 argv: ["-root","/root","-zip","bw64url:517564302;http://127.0.0.1:34981/runtime/support-94deeb6b24787be0d6b0d1317e12bc4499ac7680820243ced542593d6bb64e0d.zip|517564302","-zip","glibc-rootfs32.zip","-zip","bw64url:232594442;http://127.0.0.1:34981/runtime/wine32.zip|232594442","-zip","prefix32.zip","-zip","bw64url:5798;http://127.0.0.1:34981/__fixtures/fna-program.zip|5798","-w","/home/username/apps/","-env","HOME=/home/username","-env","WINEPREFIX=/home/username/.wine","-env","WINESERVER=/usr/lib/wine/wineserver32","-env","WINEDLLPATH=/opt/wine-stable/lib/wine","-env","WINE_D3D_CONFIG=csmt=0x0","-env","WINELOADERNOEXEC=1","-env","XDG_RUNTIME_DIR=/tmp","-env","WINEDEBUG=+opengl,+wgl,+debugstr","-env","WINEDATADIR=/opt/wine-stable/share/wine","-env","TMPDIR=/home/username/tmp","/opt/wine-stable/bin/wine","Z:\\home\\username\\apps\\fna-runtime.exe"]
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: Starting ...
+log: Command line arguments: "./this.program" "-root" "/root" "-zip" "bw64url:517564302;http://127.0.0.1:34981/runtime/support-94deeb6b24787be0d6b0d1317e12bc4499ac7680820243ced542593d6bb64e0d.zip|517564302" "-zip" "glibc-rootfs32.zip" "-zip" "bw64url:232594442;http://127.0.0.1:34981/runtime/wine32.zip|232594442" "-zip" "prefix32.zip" "-zip" "bw64url:5798;http://127.0.0.1:34981/__fixtures/fna-program.zip|5798" "-w" "/home/username/apps/" "-env" "HOME=/home/username" "-env" "WINEPREFIX=/home/username/.wine" "-env" "WINESERVER=/usr/lib/wine/wineserver32" "-env" "WINEDLLPATH=/opt/wine-stable/lib/wine" "-env" "WINE_D3D_CONFIG=csmt=0x0" "-env" "WINELOADERNOEXEC=1" "-env" "XDG_RUNTIME_DIR=/tmp" "-env" "WINEDEBUG=+opengl,+wgl,+debugstr" "-env" "WINEDATADIR=/opt/wine-stable/share/wine" "-env" "TMPDIR=/home/username/tmp" "/opt/wine-stable/bin/wine" "Z:\home\username\apps\fna-runtime.exe"
+log: Using root directory: /root
+log: Using zip file system: bw64url:517564302;http://127.0.0.1:34981/runtime/support-94deeb6b24787be0d6b0d1317e12bc4499ac7680820243ced542593d6bb64e0d.zip|517564302
+log: Using zip file system: glibc-rootfs32.zip
+log: Using zip file system: bw64url:232594442;http://127.0.0.1:34981/runtime/wine32.zip|232594442
+log: Using zip file system: prefix32.zip
+log: Using zip file system: bw64url:5798;http://127.0.0.1:34981/__fixtures/fna-program.zip|5798
+log: Created root directory: /root
+log: fszipurl: mounted 493 MB zip lazily (1 part(s), 2MB blocks)
+log: Loaded bw64url:517564302;http://127.0.0.1:34981/runtime/support-94deeb6b24787be0d6b0d1317e12bc4499ac7680820243ced542593d6bb64e0d.zip|517564302 in 1081 ms
+log: Loaded glibc-rootfs32.zip in 95 ms
+log: fszipurl: mounted 221 MB zip lazily (1 part(s), 2MB blocks)
+log: Loaded bw64url:232594442;http://127.0.0.1:34981/runtime/wine32.zip|232594442 in 382 ms
+log: Loaded prefix32.zip in 18 ms
+log: fszipurl: mounted 0 MB zip lazily (1 part(s), 2MB blocks)
+log: Loaded bw64url:5798;http://127.0.0.1:34981/__fixtures/fna-program.zip|5798 in 7 ms
+log: Launching "/opt/wine-stable/bin/wine" "Z:\home\username\apps\fna-runtime.exe" 
+log: loadProgram: PT_INTERP '/lib/ld-linux.so.2', loading dynamic linker
+log: loadProgram: interpreter mapped at 0xb0000000, entry 0xb001abd0
+log: setupThreadStack32: argc=2 envc=18 prog=wine
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FEDC0
+log: wine64session: context captured (cwd=/home/username/apps/ uid=1 bootPid=10)
+log: loadProgram: PT_INTERP '/lib/ld-linux.so.2', loading dynamic linker
+log: loadProgram: interpreter mapped at 0xb0000000, entry 0xb001abd0
+log: setupThreadStack32: argc=1 envc=19 prog=wineserver32
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FEDB8
+log: BW64-DIAG pair enter pid=14 tid=15 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=14 tid=15
+log: BW64-DIAG pair s1 pid=14 tid=15 fd=3
+log: BW64-DIAG pair s2 pid=14 tid=15 fd=4
+log: BW64-DIAG pair wired pid=14 tid=15 fd1=3 fd2=4
+log: BW64-DIAG pair enter pid=14 tid=15 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=14 tid=15
+log: BW64-DIAG pair s1 pid=14 tid=15 fd=6
+log: BW64-DIAG pair s2 pid=14 tid=15 fd=7
+log: BW64-DIAG pair wired pid=14 tid=15 fd1=6 fd2=7
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=3
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=7
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=3 fd2=7
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=10
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=11
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=10 fd2=11
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=12
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=13
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=12 fd2=13
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=14
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=15
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=14 fd2=15
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=16
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=17
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=16 fd2=17
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=22
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=23
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=22 fd2=23
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=6
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=7
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=6 fd2=7
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=8
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=9
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=8 fd2=9
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/wineboot.exe' -> fd 26
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=7
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=11
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=7 fd2=11
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=28
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=29
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=28 fd2=29
+log: setupThreadStack32: argc=4 envc=21 prog=wine-preloader
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FED2C
+log: BW64-DIAG pair enter pid=20 tid=21 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=20 tid=21
+log: BW64-DIAG pair s1 pid=20 tid=21 fd=4
+log: BW64-DIAG pair s2 pid=20 tid=21 fd=5
+log: BW64-DIAG pair wired pid=20 tid=21 fd1=4 fd2=5
+log: BW64-DIAG pair enter pid=20 tid=21 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=20 tid=21
+log: BW64-DIAG pair s1 pid=20 tid=21 fd=6
+log: BW64-DIAG pair s2 pid=20 tid=21 fd=8
+log: BW64-DIAG pair wired pid=20 tid=21 fd1=6 fd2=8
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/wineboot.exe' -> fd 31
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/wineboot.exe' -> fd 31
+log: fszipurl: 17 MB fetched lazily so far
+log: 002c:fixme:actctx:parse_depend_manifests Could not find dependent assembly L"Microsoft.Windows.Common-Controls" (6.0.0.0)
+log: fszipurl: 33 MB fetched lazily so far
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/services.exe' -> fd 26
+log: BW64-DIAG pair enter pid=20 tid=21 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=20 tid=21
+log: BW64-DIAG pair s1 pid=20 tid=21 fd=5
+log: BW64-DIAG pair s2 pid=20 tid=21 fd=12
+log: BW64-DIAG pair wired pid=20 tid=21 fd1=5 fd2=12
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=49
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=50
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=49 fd2=50
+log: setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FED34
+log: BW64-DIAG pair enter pid=24 tid=25 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=25
+log: BW64-DIAG pair s1 pid=24 tid=25 fd=4
+log: BW64-DIAG pair s2 pid=24 tid=25 fd=6
+log: BW64-DIAG pair wired pid=24 tid=25 fd1=4 fd2=6
+log: BW64-DIAG pair enter pid=24 tid=25 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=25
+log: BW64-DIAG pair s1 pid=24 tid=25 fd=7
+log: BW64-DIAG pair s2 pid=24 tid=25 fd=8
+log: BW64-DIAG pair wired pid=24 tid=25 fd1=7 fd2=8
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/services.exe' -> fd 52
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/services.exe' -> fd 52
+log: BW64-DIAG pair enter pid=24 tid=25 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=25
+log: BW64-DIAG pair s1 pid=24 tid=25 fd=9
+log: BW64-DIAG pair s2 pid=24 tid=25 fd=10
+log: BW64-DIAG pair wired pid=24 tid=25 fd1=9 fd2=10
+log: BW64-DIAG pair enter pid=24 tid=26 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=26
+log: BW64-DIAG pair s1 pid=24 tid=26 fd=9
+log: BW64-DIAG pair s2 pid=24 tid=26 fd=11
+log: BW64-DIAG pair wired pid=24 tid=26 fd1=9 fd2=11
+log: BW64-DIAG pair enter pid=24 tid=26 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=26
+log: BW64-DIAG pair s1 pid=24 tid=26 fd=12
+log: BW64-DIAG pair s2 pid=24 tid=26 fd=13
+log: BW64-DIAG pair wired pid=24 tid=26 fd1=12 fd2=13
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 59
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 59
+log: BW64-DIAG pair enter pid=24 tid=25 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=24 tid=25
+log: BW64-DIAG pair s1 pid=24 tid=25 fd=11
+log: BW64-DIAG pair s2 pid=24 tid=25 fd=15
+log: BW64-DIAG pair wired pid=24 tid=25 fd1=11 fd2=15
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=61
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=62
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=61 fd2=62
+log: setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FED34
+log: FsZip: 64 entry streams opened, 13 MB decompressed, 7 MB served from cache, 0 backward reopens
+log: BW64-DIAG pair enter pid=29 tid=30 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=30
+log: BW64-DIAG pair s1 pid=29 tid=30 fd=4
+log: BW64-DIAG pair s2 pid=29 tid=30 fd=5
+log: BW64-DIAG pair wired pid=29 tid=30 fd1=4 fd2=5
+log: BW64-DIAG pair enter pid=29 tid=30 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=30
+log: BW64-DIAG pair s1 pid=29 tid=30 fd=6
+log: BW64-DIAG pair s2 pid=29 tid=30 fd=7
+log: BW64-DIAG pair wired pid=29 tid=30 fd1=6 fd2=7
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 64
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/winedevice.exe' -> fd 64
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/ntoskrnl.exe' -> fd 64
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/ntoskrnl.exe' -> fd 64
+log: fszipurl: 49 MB fetched lazily so far
+log: BW64-DIAG pair enter pid=24 tid=26 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=26
+log: BW64-DIAG pair s1 pid=24 tid=26 fd=11
+log: BW64-DIAG pair s2 pid=24 tid=26 fd=14
+log: BW64-DIAG pair wired pid=24 tid=26 fd1=11 fd2=14
+log: BW64-DIAG pair enter pid=24 tid=31 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=31
+log: BW64-DIAG pair s1 pid=24 tid=31 fd=11
+log: BW64-DIAG pair s2 pid=24 tid=31 fd=15
+log: BW64-DIAG pair wired pid=24 tid=31 fd1=11 fd2=15
+log: BW64-DIAG pair enter pid=24 tid=31 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=31
+log: BW64-DIAG pair s1 pid=24 tid=31 fd=16
+log: BW64-DIAG pair s2 pid=24 tid=31 fd=17
+log: BW64-DIAG pair wired pid=24 tid=31 fd1=16 fd2=17
+log: BW64-DIAG pair enter pid=24 tid=31 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=31
+log: BW64-DIAG pair s1 pid=24 tid=31 fd=15
+log: BW64-DIAG pair s2 pid=24 tid=31 fd=18
+log: BW64-DIAG pair wired pid=24 tid=31 fd1=15 fd2=18
+log: BW64-DIAG pair enter pid=24 tid=32 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=32
+log: BW64-DIAG pair s1 pid=24 tid=32 fd=15
+log: BW64-DIAG pair s2 pid=24 tid=32 fd=19
+log: BW64-DIAG pair wired pid=24 tid=32 fd1=15 fd2=19
+log: BW64-DIAG pair enter pid=24 tid=32 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=32
+log: BW64-DIAG pair s1 pid=24 tid=32 fd=20
+log: BW64-DIAG pair s2 pid=24 tid=32 fd=21
+log: BW64-DIAG pair wired pid=24 tid=32 fd1=20 fd2=21
+log: BW64-DIAG pair enter pid=29 tid=30 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=30
+log: BW64-DIAG pair s1 pid=29 tid=30 fd=8
+log: BW64-DIAG pair s2 pid=29 tid=30 fd=9
+log: BW64-DIAG pair wired pid=29 tid=30 fd1=8 fd2=9
+log: BW64-DIAG pair enter pid=29 tid=33 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=33
+log: BW64-DIAG pair s1 pid=29 tid=33 fd=8
+log: BW64-DIAG pair s2 pid=29 tid=33 fd=10
+log: BW64-DIAG pair wired pid=29 tid=33 fd1=8 fd2=10
+log: BW64-DIAG pair enter pid=29 tid=33 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=33
+log: BW64-DIAG pair s1 pid=29 tid=33 fd=12
+log: BW64-DIAG pair s2 pid=29 tid=33 fd=13
+log: BW64-DIAG pair wired pid=29 tid=33 fd1=12 fd2=13
+log: BW64-DIAG pair enter pid=29 tid=33 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=33
+log: BW64-DIAG pair s1 pid=29 tid=33 fd=10
+log: BW64-DIAG pair s2 pid=29 tid=33 fd=14
+log: BW64-DIAG pair wired pid=29 tid=33 fd1=10 fd2=14
+log: BW64-DIAG pair enter pid=29 tid=34 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=34
+log: BW64-DIAG pair s1 pid=29 tid=34 fd=10
+log: BW64-DIAG pair s2 pid=29 tid=34 fd=15
+log: BW64-DIAG pair wired pid=29 tid=34 fd1=10 fd2=15
+log: BW64-DIAG pair enter pid=29 tid=34 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=34
+log: BW64-DIAG pair s1 pid=29 tid=34 fd=16
+log: BW64-DIAG pair s2 pid=29 tid=34 fd=17
+log: BW64-DIAG pair wired pid=29 tid=34 fd1=16 fd2=17
+log: BW64-DIAG pair enter pid=29 tid=34 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=34
+log: BW64-DIAG pair s1 pid=29 tid=34 fd=15
+log: BW64-DIAG pair s2 pid=29 tid=34 fd=18
+log: BW64-DIAG pair wired pid=29 tid=34 fd1=15 fd2=18
+log: BW64-DIAG pair enter pid=29 tid=35 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=35
+log: BW64-DIAG pair s1 pid=29 tid=35 fd=15
+log: BW64-DIAG pair s2 pid=29 tid=35 fd=19
+log: BW64-DIAG pair wired pid=29 tid=35 fd1=15 fd2=19
+log: BW64-DIAG pair enter pid=29 tid=35 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=35
+log: BW64-DIAG pair s1 pid=29 tid=35 fd=20
+log: BW64-DIAG pair s2 pid=29 tid=35 fd=21
+log: BW64-DIAG pair wired pid=29 tid=35 fd1=20 fd2=21
+log: BW64-DIAG pair enter pid=29 tid=33 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=33
+log: BW64-DIAG pair s1 pid=29 tid=33 fd=19
+log: BW64-DIAG pair s2 pid=29 tid=33 fd=22
+log: BW64-DIAG pair wired pid=29 tid=33 fd1=19 fd2=22
+log: BW64-DIAG pair enter pid=29 tid=36 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair enter pid=29 tid=33 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair lock-busy pid=29 tid=33
+log: BW64-DIAG pair locked pid=29 tid=36
+log: BW64-DIAG pair s1 pid=29 tid=36 fd=19
+log: BW64-DIAG pair s2 pid=29 tid=36 fd=23
+log: BW64-DIAG pair wired pid=29 tid=36 fd1=19 fd2=23
+log: BW64-DIAG pair locked pid=29 tid=33
+log: BW64-DIAG pair s1 pid=29 tid=33 fd=24
+log: BW64-DIAG pair enter pid=29 tid=36 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair lock-busy pid=29 tid=36
+log: BW64-DIAG pair s2 pid=29 tid=33 fd=25
+log: BW64-DIAG pair wired pid=29 tid=33 fd1=24 fd2=25
+log: BW64-DIAG pair locked pid=29 tid=36
+log: BW64-DIAG pair s1 pid=29 tid=36 fd=26
+log: BW64-DIAG pair s2 pid=29 tid=36 fd=27
+log: BW64-DIAG pair wired pid=29 tid=36 fd1=26 fd2=27
+log: BW64-DIAG pair enter pid=29 tid=37 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=37
+log: BW64-DIAG pair s1 pid=29 tid=37 fd=23
+log: BW64-DIAG pair s2 pid=29 tid=37 fd=24
+log: BW64-DIAG pair wired pid=29 tid=37 fd1=23 fd2=24
+log: BW64-DIAG pair enter pid=29 tid=37 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=37
+log: BW64-DIAG pair s1 pid=29 tid=37 fd=28
+log: BW64-DIAG pair s2 pid=29 tid=37 fd=29
+log: BW64-DIAG pair wired pid=29 tid=37 fd1=28 fd2=29
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/plugplay.exe' -> fd 89
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/plugplay.exe' -> fd 89
+log: BW64-DIAG pair enter pid=24 tid=25 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=24 tid=25
+log: BW64-DIAG pair s1 pid=24 tid=25 fd=19
+log: BW64-DIAG pair s2 pid=24 tid=25 fd=23
+log: BW64-DIAG pair wired pid=24 tid=25 fd1=19 fd2=23
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=91
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=92
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=91 fd2=92
+log: setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FED34
+log: BW64-DIAG pair enter pid=40 tid=41 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=41
+log: BW64-DIAG pair s1 pid=40 tid=41 fd=4
+log: BW64-DIAG pair s2 pid=40 tid=41 fd=5
+log: BW64-DIAG pair wired pid=40 tid=41 fd1=4 fd2=5
+log: BW64-DIAG pair enter pid=40 tid=41 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=41
+log: BW64-DIAG pair s1 pid=40 tid=41 fd=6
+log: BW64-DIAG pair s2 pid=40 tid=41 fd=7
+log: BW64-DIAG pair wired pid=40 tid=41 fd1=6 fd2=7
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/plugplay.exe' -> fd 88
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/plugplay.exe' -> fd 88
+log: fszipurl: 65 MB fetched lazily so far
+log: BW64-INFO hard-link from=/root/tmp/fontconfig/CACHEDIR.TAG.TMP-iwMOkK to=/tmp/fontconfig/CACHEDIR.TAG.LCK outcome=served by shared backing path (backing store cannot hard-link) count=1
+log: BW64-INFO hard-link from=/root/tmp/fontconfig/3830d5c3ddfd5cd38a049b759396e72e-le32d4.cache-8.TMP-INBDRK to=/tmp/fontconfig//3830d5c3ddfd5cd38a049b759396e72e-le32d4.cache-8.LCK outcome=served by shared backing path (backing store cannot hard-link) count=2
+log: BW64-INFO hard-link from=/root/tmp/fontconfig/7ef2298fde41cc6eeb7af42e48b7d293-le32d4.cache-8.TMP-AZ1cZn to=/tmp/fontconfig//7ef2298fde41cc6eeb7af42e48b7d293-le32d4.cache-8.LCK outcome=served by shared backing path (backing store cannot hard-link) count=3
+log: BW64-INFO hard-link from=/root/tmp/fontconfig/d589a48862398ed80a3d6066f4f56f4c-le32d4.cache-8.TMP-sj8PWX to=/tmp/fontconfig//d589a48862398ed80a3d6066f4f56f4c-le32d4.cache-8.LCK outcome=served by shared backing path (backing store cannot hard-link) count=4
+log: BW64-INFO hard-link from=/root/tmp/fontconfig/99e8ed0e538f840c565b6ed5dad60d56-le32d4.cache-8.TMP-wzDidq to=/tmp/fontconfig//99e8ed0e538f840c565b6ed5dad60d56-le32d4.cache-8.LCK outcome=served by shared backing path (backing store cannot hard-link) count=5
+log: BW64-DIAG pair enter pid=24 tid=26 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=26
+log: BW64-DIAG pair s1 pid=24 tid=26 fd=19
+log: BW64-DIAG pair s2 pid=24 tid=26 fd=22
+log: BW64-DIAG pair wired pid=24 tid=26 fd1=19 fd2=22
+log: BW64-DIAG pair enter pid=24 tid=42 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=42
+log: BW64-DIAG pair s1 pid=24 tid=42 fd=19
+log: BW64-DIAG pair s2 pid=24 tid=42 fd=23
+log: BW64-DIAG pair wired pid=24 tid=42 fd1=19 fd2=23
+log: BW64-DIAG pair enter pid=24 tid=42 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=42
+log: BW64-DIAG pair s1 pid=24 tid=42 fd=24
+log: BW64-DIAG pair s2 pid=24 tid=42 fd=25
+log: BW64-DIAG pair wired pid=24 tid=42 fd1=24 fd2=25
+log: BW64-DIAG pair enter pid=40 tid=41 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=41
+log: BW64-DIAG pair s1 pid=40 tid=41 fd=8
+log: BW64-DIAG pair s2 pid=40 tid=41 fd=9
+log: BW64-DIAG pair wired pid=40 tid=41 fd1=8 fd2=9
+log: BW64-DIAG pair enter pid=40 tid=43 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=43
+log: BW64-DIAG pair s1 pid=40 tid=43 fd=8
+log: BW64-DIAG pair s2 pid=40 tid=43 fd=10
+log: BW64-DIAG pair wired pid=40 tid=43 fd1=8 fd2=10
+log: BW64-DIAG pair enter pid=40 tid=43 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=43
+log: BW64-DIAG pair s1 pid=40 tid=43 fd=11
+log: BW64-DIAG pair s2 pid=40 tid=43 fd=12
+log: BW64-DIAG pair wired pid=40 tid=43 fd1=11 fd2=12
+log: BW64-DIAG pair enter pid=40 tid=43 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=43
+log: BW64-DIAG pair s1 pid=40 tid=43 fd=10
+log: BW64-DIAG pair s2 pid=40 tid=43 fd=13
+log: BW64-DIAG pair wired pid=40 tid=43 fd1=10 fd2=13
+log: BW64-DIAG pair enter pid=40 tid=44 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=44
+log: BW64-DIAG pair s1 pid=40 tid=44 fd=10
+log: BW64-DIAG pair s2 pid=40 tid=44 fd=14
+log: BW64-DIAG pair wired pid=40 tid=44 fd1=10 fd2=14
+log: BW64-DIAG pair enter pid=40 tid=44 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=44
+log: BW64-DIAG pair s1 pid=40 tid=44 fd=15
+log: BW64-DIAG pair s2 pid=40 tid=44 fd=16
+log: BW64-DIAG pair wired pid=40 tid=44 fd1=15 fd2=16
+log: BW64-DIAG pair enter pid=40 tid=44 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=44
+log: BW64-DIAG pair s1 pid=40 tid=44 fd=14
+log: BW64-DIAG pair s2 pid=40 tid=44 fd=17
+log: BW64-DIAG pair wired pid=40 tid=44 fd1=14 fd2=17
+log: BW64-DIAG pair enter pid=40 tid=45 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=45
+log: BW64-DIAG pair s1 pid=40 tid=45 fd=14
+log: BW64-DIAG pair s2 pid=40 tid=45 fd=18
+log: BW64-DIAG pair wired pid=40 tid=45 fd1=14 fd2=18
+log: BW64-DIAG pair enter pid=40 tid=45 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=45
+log: BW64-DIAG pair s1 pid=40 tid=45 fd=20
+log: BW64-DIAG pair s2 pid=40 tid=45 fd=21
+log: BW64-DIAG pair wired pid=40 tid=45 fd1=20 fd2=21
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/svchost.exe' -> fd 109
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/svchost.exe' -> fd 109
+log: BW64-DIAG pair enter pid=24 tid=25 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=24 tid=25
+log: BW64-DIAG pair s1 pid=24 tid=25 fd=23
+log: BW64-DIAG pair s2 pid=24 tid=25 fd=27
+log: BW64-DIAG pair wired pid=24 tid=25 fd1=23 fd2=27
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=111
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=112
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=111 fd2=112
+log: setupThreadStack32: argc=5 envc=21 prog=wine-preloader
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FED14
+log: BW64-DIAG pair enter pid=48 tid=49 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=48 tid=49
+log: BW64-DIAG pair s1 pid=48 tid=49 fd=4
+log: BW64-DIAG pair s2 pid=48 tid=49 fd=5
+log: BW64-DIAG pair wired pid=48 tid=49 fd1=4 fd2=5
+log: BW64-DIAG pair enter pid=48 tid=49 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=48 tid=49
+log: BW64-DIAG pair s1 pid=48 tid=49 fd=6
+log: BW64-DIAG pair s2 pid=48 tid=49 fd=7
+log: BW64-DIAG pair wired pid=48 tid=49 fd1=6 fd2=7
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/svchost.exe' -> fd 114
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/svchost.exe' -> fd 114
+log: BW64-DIAG pair enter pid=24 tid=26 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=26
+log: BW64-DIAG pair s1 pid=24 tid=26 fd=23
+log: BW64-DIAG pair s2 pid=24 tid=26 fd=26
+log: BW64-DIAG pair wired pid=24 tid=26 fd1=23 fd2=26
+log: BW64-DIAG pair enter pid=24 tid=50 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=50
+log: BW64-DIAG pair s1 pid=24 tid=50 fd=23
+log: BW64-DIAG pair s2 pid=24 tid=50 fd=27
+log: BW64-DIAG pair wired pid=24 tid=50 fd1=23 fd2=27
+log: BW64-DIAG pair enter pid=24 tid=50 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=50
+log: BW64-DIAG pair s1 pid=24 tid=50 fd=28
+log: BW64-DIAG pair s2 pid=24 tid=50 fd=29
+log: BW64-DIAG pair wired pid=24 tid=50 fd1=28 fd2=29
+log: BW64-DIAG pair enter pid=48 tid=49 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=48 tid=49
+log: BW64-DIAG pair s1 pid=48 tid=49 fd=8
+log: BW64-DIAG pair s2 pid=48 tid=49 fd=9
+log: BW64-DIAG pair wired pid=48 tid=49 fd1=8 fd2=9
+log: BW64-DIAG pair enter pid=48 tid=51 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=48 tid=51
+log: BW64-DIAG pair s1 pid=48 tid=51 fd=8
+log: BW64-DIAG pair s2 pid=48 tid=51 fd=10
+log: BW64-DIAG pair wired pid=48 tid=51 fd1=8 fd2=10
+log: BW64-DIAG pair enter pid=48 tid=51 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=48 tid=51
+log: BW64-DIAG pair s1 pid=48 tid=51 fd=11
+log: BW64-DIAG pair s2 pid=48 tid=51 fd=12
+log: BW64-DIAG pair wired pid=48 tid=51 fd1=11 fd2=12
+log: BW64-DIAG pair enter pid=48 tid=51 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=48 tid=51
+log: BW64-DIAG pair s1 pid=48 tid=51 fd=10
+log: BW64-DIAG pair s2 pid=48 tid=51 fd=13
+log: BW64-DIAG pair wired pid=48 tid=51 fd1=10 fd2=13
+log: BW64-DIAG pair enter pid=48 tid=52 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=48 tid=52
+log: BW64-DIAG pair s1 pid=48 tid=52 fd=10
+log: BW64-DIAG pair s2 pid=48 tid=52 fd=14
+log: BW64-DIAG pair wired pid=48 tid=52 fd1=10 fd2=14
+log: BW64-DIAG pair enter pid=48 tid=52 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=48 tid=52
+log: BW64-DIAG pair s1 pid=48 tid=52 fd=15
+log: BW64-DIAG pair s2 pid=48 tid=52 fd=16
+log: BW64-DIAG pair wired pid=48 tid=52 fd1=15 fd2=16
+log: BW64-DIAG pair enter pid=29 tid=33 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=33
+log: BW64-DIAG pair s1 pid=29 tid=33 fd=23
+log: BW64-DIAG pair s2 pid=29 tid=33 fd=24
+log: BW64-DIAG pair wired pid=29 tid=33 fd1=23 fd2=24
+log: BW64-DIAG pair enter pid=29 tid=33 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=33
+log: BW64-DIAG pair enter pid=29 tid=53 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair s1 pid=29 tid=33 fd=23
+log: BW64-DIAG pair lock-busy pid=29 tid=53
+log: BW64-DIAG pair s2 pid=29 tid=33 fd=25
+log: BW64-DIAG pair wired pid=29 tid=33 fd1=23 fd2=25
+log: BW64-DIAG pair locked pid=29 tid=53
+log: BW64-DIAG pair s1 pid=29 tid=53 fd=28
+log: BW64-DIAG pair s2 pid=29 tid=53 fd=29
+log: BW64-DIAG pair wired pid=29 tid=53 fd1=28 fd2=29
+log: BW64-DIAG pair enter pid=29 tid=53 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=53
+log: BW64-DIAG pair s1 pid=29 tid=53 fd=23
+log: BW64-DIAG pair s2 pid=29 tid=53 fd=30
+log: BW64-DIAG pair wired pid=29 tid=53 fd1=23 fd2=30
+log: BW64-DIAG pair enter pid=29 tid=54 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=54
+log: BW64-DIAG pair s1 pid=29 tid=54 fd=31
+log: BW64-DIAG pair s2 pid=29 tid=54 fd=32
+log: BW64-DIAG pair wired pid=29 tid=54 fd1=31 fd2=32
+log: BW64-DIAG pair enter pid=29 tid=54 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=54
+log: BW64-DIAG pair s1 pid=29 tid=54 fd=29
+log: BW64-DIAG pair s2 pid=29 tid=54 fd=33
+log: BW64-DIAG pair wired pid=29 tid=54 fd1=29 fd2=33
+log: FsZip: 128 entry streams opened, 26 MB decompressed, 12 MB served from cache, 0 backward reopens
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 132
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 132
+log: BW64-DIAG pair enter pid=24 tid=25 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=24 tid=25
+log: BW64-DIAG pair s1 pid=24 tid=25 fd=27
+log: BW64-DIAG pair s2 pid=24 tid=25 fd=31
+log: BW64-DIAG pair wired pid=24 tid=25 fd1=27 fd2=31
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=138
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=139
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=138 fd2=139
+log: setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FED34
+log: BW64-DIAG pair enter pid=57 tid=58 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=58
+log: BW64-DIAG pair s1 pid=57 tid=58 fd=4
+log: BW64-DIAG pair s2 pid=57 tid=58 fd=5
+log: BW64-DIAG pair wired pid=57 tid=58 fd1=4 fd2=5
+log: BW64-DIAG pair enter pid=57 tid=58 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=58
+log: BW64-DIAG pair s1 pid=57 tid=58 fd=6
+log: BW64-DIAG pair s2 pid=57 tid=58 fd=7
+log: BW64-DIAG pair wired pid=57 tid=58 fd1=6 fd2=7
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 141
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/winedevice.exe' -> fd 141
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/ntoskrnl.exe' -> fd 141
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/ntoskrnl.exe' -> fd 141
+log: BW64-DIAG pair enter pid=24 tid=26 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=26
+log: BW64-DIAG pair s1 pid=24 tid=26 fd=27
+log: BW64-DIAG pair s2 pid=24 tid=26 fd=30
+log: BW64-DIAG pair wired pid=24 tid=26 fd1=27 fd2=30
+log: BW64-DIAG pair enter pid=24 tid=59 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=59
+log: BW64-DIAG pair s1 pid=24 tid=59 fd=27
+log: BW64-DIAG pair s2 pid=24 tid=59 fd=31
+log: BW64-DIAG pair wired pid=24 tid=59 fd1=27 fd2=31
+log: BW64-DIAG pair enter pid=24 tid=59 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=59
+log: BW64-DIAG pair s1 pid=24 tid=59 fd=32
+log: BW64-DIAG pair s2 pid=24 tid=59 fd=33
+log: BW64-DIAG pair wired pid=24 tid=59 fd1=32 fd2=33
+log: BW64-DIAG pair enter pid=57 tid=58 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=58
+log: BW64-DIAG pair s1 pid=57 tid=58 fd=8
+log: BW64-DIAG pair s2 pid=57 tid=58 fd=9
+log: BW64-DIAG pair wired pid=57 tid=58 fd1=8 fd2=9
+log: BW64-DIAG pair enter pid=57 tid=60 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=60
+log: BW64-DIAG pair s1 pid=57 tid=60 fd=8
+log: BW64-DIAG pair s2 pid=57 tid=60 fd=10
+log: BW64-DIAG pair wired pid=57 tid=60 fd1=8 fd2=10
+log: BW64-DIAG pair enter pid=57 tid=60 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=60
+log: BW64-DIAG pair s1 pid=57 tid=60 fd=11
+log: BW64-DIAG pair s2 pid=57 tid=60 fd=12
+log: BW64-DIAG pair wired pid=57 tid=60 fd1=11 fd2=12
+log: BW64-DIAG pair enter pid=57 tid=60 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=60
+log: BW64-DIAG pair s1 pid=57 tid=60 fd=10
+log: BW64-DIAG pair s2 pid=57 tid=60 fd=13
+log: BW64-DIAG pair wired pid=57 tid=60 fd1=10 fd2=13
+log: BW64-DIAG pair enter pid=57 tid=61 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=61
+log: BW64-DIAG pair s1 pid=57 tid=61 fd=10
+log: BW64-DIAG pair s2 pid=57 tid=61 fd=14
+log: BW64-DIAG pair wired pid=57 tid=61 fd1=10 fd2=14
+log: BW64-DIAG pair enter pid=57 tid=61 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=61
+log: BW64-DIAG pair s1 pid=57 tid=61 fd=15
+log: BW64-DIAG pair s2 pid=57 tid=61 fd=16
+log: BW64-DIAG pair wired pid=57 tid=61 fd1=15 fd2=16
+log: BW64-DIAG pair enter pid=57 tid=61 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=61
+log: BW64-DIAG pair s1 pid=57 tid=61 fd=14
+log: BW64-DIAG pair s2 pid=57 tid=61 fd=17
+log: BW64-DIAG pair wired pid=57 tid=61 fd1=14 fd2=17
+log: BW64-DIAG pair enter pid=57 tid=62 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=62
+log: BW64-DIAG pair s1 pid=57 tid=62 fd=14
+log: BW64-DIAG pair s2 pid=57 tid=62 fd=18
+log: BW64-DIAG pair wired pid=57 tid=62 fd1=14 fd2=18
+log: BW64-DIAG pair enter pid=57 tid=62 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=62
+log: BW64-DIAG pair s1 pid=57 tid=62 fd=19
+log: BW64-DIAG pair s2 pid=57 tid=62 fd=20
+log: BW64-DIAG pair wired pid=57 tid=62 fd1=19 fd2=20
+log: BW64-DIAG pair enter pid=57 tid=60 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=60
+log: BW64-DIAG pair s1 pid=57 tid=60 fd=18
+log: BW64-DIAG pair s2 pid=57 tid=60 fd=21
+log: BW64-DIAG pair wired pid=57 tid=60 fd1=18 fd2=21
+log: BW64-DIAG pair enter pid=57 tid=63 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=63
+log: BW64-DIAG pair s1 pid=57 tid=63 fd=18
+log: BW64-DIAG pair s2 pid=57 tid=63 fd=22
+log: BW64-DIAG pair wired pid=57 tid=63 fd1=18 fd2=22
+log: BW64-DIAG pair enter pid=57 tid=63 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=63
+log: BW64-DIAG pair s1 pid=57 tid=63 fd=23
+log: BW64-DIAG pair s2 pid=57 tid=63 fd=24
+log: BW64-DIAG pair wired pid=57 tid=63 fd1=23 fd2=24
+log: BW64-FAIL netlink-recvfrom flags=0x22 outcome=returned-EINVAL
+log: fszipurl: 81 MB fetched lazily so far
+log: BW64-DIAG pair enter pid=57 tid=60 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=60
+log: BW64-DIAG pair s1 pid=57 tid=60 fd=29
+log: BW64-DIAG pair s2 pid=57 tid=60 fd=30
+log: BW64-DIAG pair wired pid=57 tid=60 fd1=29 fd2=30
+log: BW64-DIAG pair enter pid=57 tid=65 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=65
+log: BW64-DIAG pair s1 pid=57 tid=65 fd=29
+log: BW64-DIAG pair s2 pid=57 tid=65 fd=31
+log: BW64-DIAG pair wired pid=57 tid=65 fd1=29 fd2=31
+log: BW64-DIAG pair enter pid=57 tid=65 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=65
+log: BW64-DIAG pair s1 pid=57 tid=65 fd=32
+log: BW64-DIAG pair s2 pid=57 tid=65 fd=33
+log: BW64-DIAG pair wired pid=57 tid=65 fd1=32 fd2=33
+log: BW64-DIAG pair enter pid=57 tid=60 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=60
+log: BW64-DIAG pair s1 pid=57 tid=60 fd=31
+log: BW64-DIAG pair s2 pid=57 tid=60 fd=34
+log: BW64-DIAG pair wired pid=57 tid=60 fd1=31 fd2=34
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=57 tid=66 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=66
+log: BW64-DIAG pair s1 pid=57 tid=66 fd=31
+log: BW64-DIAG pair s2 pid=57 tid=66 fd=32
+log: BW64-DIAG pair wired pid=57 tid=66 fd1=31 fd2=32
+log: BW64-DIAG pair enter pid=57 tid=66 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=66
+log: BW64-DIAG pair s1 pid=57 tid=66 fd=33
+log: BW64-DIAG pair s2 pid=57 tid=66 fd=35
+log: BW64-DIAG pair wired pid=57 tid=66 fd1=33 fd2=35
+log: BW64-DIAG pair enter pid=57 tid=66 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=57 tid=66
+log: BW64-DIAG pair s1 pid=57 tid=66 fd=32
+log: BW64-DIAG pair s2 pid=57 tid=66 fd=36
+log: BW64-DIAG pair wired pid=57 tid=66 fd1=32 fd2=36
+log: BW64-DIAG pair enter pid=57 tid=60 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=60
+log: BW64-DIAG pair s1 pid=57 tid=60 fd=40
+log: BW64-DIAG pair s2 pid=57 tid=60 fd=41
+log: BW64-DIAG pair wired pid=57 tid=60 fd1=40 fd2=41
+log: BW64-DIAG pair enter pid=57 tid=67 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=67
+log: BW64-DIAG pair s1 pid=57 tid=67 fd=39
+log: BW64-DIAG pair s2 pid=57 tid=67 fd=40
+log: BW64-DIAG pair wired pid=57 tid=67 fd1=39 fd2=40
+log: BW64-DIAG pair enter pid=57 tid=67 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=67
+log: BW64-DIAG pair s1 pid=57 tid=67 fd=42
+log: BW64-DIAG pair s2 pid=57 tid=67 fd=43
+log: BW64-DIAG pair wired pid=57 tid=67 fd1=42 fd2=43
+log: BW64-DIAG pair enter pid=24 tid=25 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=25
+log: BW64-DIAG pair s1 pid=24 tid=25 fd=31
+log: BW64-DIAG pair s2 pid=24 tid=25 fd=34
+log: BW64-DIAG pair wired pid=24 tid=25 fd1=31 fd2=34
+log: BW64-DIAG pair enter pid=24 tid=68 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=68
+log: BW64-DIAG pair s1 pid=24 tid=68 fd=31
+log: BW64-DIAG pair s2 pid=24 tid=68 fd=35
+log: BW64-DIAG pair wired pid=24 tid=68 fd1=31 fd2=35
+log: BW64-DIAG pair enter pid=24 tid=68 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=68
+log: BW64-DIAG pair s1 pid=24 tid=68 fd=36
+log: BW64-DIAG pair s2 pid=24 tid=68 fd=37
+log: BW64-DIAG pair wired pid=24 tid=68 fd1=36 fd2=37
+log: 00a8:err:setupapi:do_file_copyW Unsupported style(s) 0x10
+log: FsZip: 64 entry streams opened, 17 MB decompressed, 2 MB served from cache, 0 backward reopens
+log: BW64-DIAG pair enter pid=57 tid=62 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=62
+log: BW64-DIAG pair s1 pid=57 tid=62 fd=29
+log: BW64-DIAG pair s2 pid=57 tid=62 fd=30
+log: BW64-DIAG pair wired pid=57 tid=62 fd1=29 fd2=30
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=57 tid=69 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=69
+log: BW64-DIAG pair s1 pid=57 tid=69 fd=29
+log: BW64-DIAG pair s2 pid=57 tid=69 fd=39
+log: BW64-DIAG pair wired pid=57 tid=69 fd1=29 fd2=39
+log: BW64-DIAG pair enter pid=57 tid=69 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=69
+log: BW64-DIAG pair s1 pid=57 tid=69 fd=40
+log: BW64-DIAG pair s2 pid=57 tid=69 fd=41
+log: BW64-DIAG pair wired pid=57 tid=69 fd1=40 fd2=41
+log: BW64-DIAG pair enter pid=57 tid=62 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=62
+log: BW64-DIAG pair s1 pid=57 tid=62 fd=39
+log: BW64-DIAG pair s2 pid=57 tid=62 fd=42
+log: BW64-DIAG pair wired pid=57 tid=62 fd1=39 fd2=42
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=57 tid=70 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=70
+log: BW64-DIAG pair s1 pid=57 tid=70 fd=43
+log: BW64-DIAG pair s2 pid=57 tid=70 fd=44
+log: BW64-DIAG pair wired pid=57 tid=70 fd1=43 fd2=44
+log: BW64-DIAG pair enter pid=57 tid=70 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=70
+log: BW64-DIAG pair s1 pid=57 tid=70 fd=46
+log: BW64-DIAG pair s2 pid=57 tid=70 fd=47
+log: BW64-DIAG pair wired pid=57 tid=70 fd1=46 fd2=47
+log: BW64-DIAG pair enter pid=40 tid=45 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=45
+log: BW64-DIAG pair s1 pid=40 tid=45 fd=18
+log: BW64-DIAG pair s2 pid=40 tid=45 fd=22
+log: BW64-DIAG pair wired pid=40 tid=45 fd1=18 fd2=22
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=40 tid=71 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=71
+log: BW64-DIAG pair s1 pid=40 tid=71 fd=18
+log: BW64-DIAG pair s2 pid=40 tid=71 fd=23
+log: BW64-DIAG pair wired pid=40 tid=71 fd1=18 fd2=23
+log: BW64-DIAG pair enter pid=40 tid=71 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=71
+log: BW64-DIAG pair s1 pid=40 tid=71 fd=24
+log: BW64-DIAG pair s2 pid=40 tid=71 fd=25
+log: BW64-DIAG pair wired pid=40 tid=71 fd1=24 fd2=25
+log: BW64-DIAG pair enter pid=40 tid=71 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=71
+log: BW64-DIAG pair s1 pid=40 tid=71 fd=23
+log: BW64-DIAG pair s2 pid=40 tid=71 fd=26
+log: BW64-DIAG pair wired pid=40 tid=71 fd1=23 fd2=26
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=40 tid=72 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=72
+log: BW64-DIAG pair s1 pid=40 tid=72 fd=23
+log: BW64-DIAG pair s2 pid=40 tid=72 fd=27
+log: BW64-DIAG pair wired pid=40 tid=72 fd1=23 fd2=27
+log: BW64-DIAG pair enter pid=40 tid=72 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=72
+log: BW64-DIAG pair s1 pid=40 tid=72 fd=28
+log: BW64-DIAG pair s2 pid=40 tid=72 fd=29
+log: BW64-DIAG pair wired pid=40 tid=72 fd1=28 fd2=29
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/z:/home/username/apps/fna-runtime.exe' -> fd 27
+log: fszipurl: 97 MB fetched lazily so far
+log: 00a8:err:setupapi:do_file_copyW Unsupported style(s) 0x10
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/conhost.exe' -> fd 30
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=7
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=11
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=7 fd2=11
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=186
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=189
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=186 fd2=189
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: setupThreadStack32: argc=10 envc=21 prog=wine-preloader
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FED00
+log: FsZip: 192 entry streams opened, 127 MB decompressed, 15 MB served from cache, 22 backward reopens
+log: BW64-DIAG pair enter pid=57 tid=62 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=62
+log: BW64-DIAG pair s1 pid=57 tid=62 fd=39
+log: BW64-DIAG pair s2 pid=57 tid=62 fd=44
+log: BW64-DIAG pair wired pid=57 tid=62 fd1=39 fd2=44
+log: BW64-DIAG pair enter pid=57 tid=77 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=77
+log: BW64-DIAG pair s1 pid=57 tid=77 fd=39
+log: BW64-DIAG pair s2 pid=57 tid=77 fd=45
+log: BW64-DIAG pair wired pid=57 tid=77 fd1=39 fd2=45
+log: BW64-DIAG pair enter pid=57 tid=77 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=77
+log: BW64-DIAG pair s1 pid=57 tid=77 fd=48
+log: BW64-DIAG pair s2 pid=57 tid=77 fd=49
+log: BW64-DIAG pair wired pid=57 tid=77 fd1=48 fd2=49
+log: BW64-DIAG pair enter pid=75 tid=76 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=75 tid=76
+log: BW64-DIAG pair s1 pid=75 tid=76 fd=4
+log: BW64-DIAG pair s2 pid=75 tid=76 fd=5
+log: BW64-DIAG pair wired pid=75 tid=76 fd1=4 fd2=5
+log: BW64-DIAG pair enter pid=75 tid=76 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=75 tid=76
+log: BW64-DIAG pair s1 pid=75 tid=76 fd=6
+log: BW64-DIAG pair s2 pid=75 tid=76 fd=8
+log: BW64-DIAG pair wired pid=75 tid=76 fd1=6 fd2=8
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/conhost.exe' -> fd 192
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/conhost.exe' -> fd 192
+log: 00d4:fixme:actctx:parse_depend_manifests Could not find dependent assembly L"Microsoft.Windows.Common-Controls" (6.0.0.0)
+log: BW64-DIAG pair enter pid=57 tid=62 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=62
+log: BW64-DIAG pair s1 pid=57 tid=62 fd=45
+log: BW64-DIAG pair s2 pid=57 tid=62 fd=50
+log: BW64-DIAG pair wired pid=57 tid=62 fd1=45 fd2=50
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=57 tid=78 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=78
+log: BW64-DIAG pair s1 pid=57 tid=78 fd=52
+log: BW64-DIAG pair s2 pid=57 tid=78 fd=53
+log: BW64-DIAG pair wired pid=57 tid=78 fd1=52 fd2=53
+log: BW64-DIAG pair enter pid=57 tid=78 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=78
+log: BW64-DIAG pair s1 pid=57 tid=78 fd=54
+log: BW64-DIAG pair s2 pid=57 tid=78 fd=55
+log: BW64-DIAG pair wired pid=57 tid=78 fd1=54 fd2=55
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/z:/home/username/apps/fna-runtime.exe' -> fd 192
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=7
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=10
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=7 fd2=10
+log: 0024:fixme:ntdll:NtQuerySystemInformation info_class SYSTEM_PERFORMANCE_INFORMATION
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=10 tid=79 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=79
+log: BW64-DIAG pair s1 pid=10 tid=79 fd=12
+log: BW64-DIAG pair s2 pid=10 tid=79 fd=13
+log: BW64-DIAG pair wired pid=10 tid=79 fd1=12 fd2=13
+log: BW64-DIAG pair enter pid=10 tid=79 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=79
+log: BW64-DIAG pair s1 pid=10 tid=79 fd=14
+log: BW64-DIAG pair s2 pid=10 tid=79 fd=15
+log: BW64-DIAG pair wired pid=10 tid=79 fd1=14 fd2=15
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=7
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=11
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=7 fd2=11
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=10 tid=80 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=80
+log: BW64-DIAG pair s1 pid=10 tid=80 fd=7
+log: BW64-DIAG pair s2 pid=10 tid=80 fd=13
+log: BW64-DIAG pair wired pid=10 tid=80 fd1=7 fd2=13
+log: BW64-DIAG pair enter pid=10 tid=80 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=80
+log: BW64-DIAG pair s1 pid=10 tid=80 fd=16
+log: BW64-DIAG pair s2 pid=10 tid=80 fd=17
+log: BW64-DIAG pair wired pid=10 tid=80 fd1=16 fd2=17
+log: fszipurl: 17 MB fetched lazily so far
+log: 0024:warn:debugstr:OutputDebugStringA "fna-runtime: BEGIN\n"
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/explorer.exe' -> fd 70
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=13
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=19
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=13 fd2=19
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=72
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=172
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=72 fd2=172
+log: setupThreadStack32: argc=4 envc=22 prog=wine-preloader
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FED00
+log: BW64-DIAG pair enter pid=83 tid=84 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=84
+log: BW64-DIAG pair s1 pid=83 tid=84 fd=4
+log: BW64-DIAG pair s2 pid=83 tid=84 fd=5
+log: BW64-DIAG pair wired pid=83 tid=84 fd1=4 fd2=5
+log: BW64-DIAG pair enter pid=83 tid=84 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=84
+log: BW64-DIAG pair s1 pid=83 tid=84 fd=6
+log: BW64-DIAG pair s2 pid=83 tid=84 fd=7
+log: BW64-DIAG pair wired pid=83 tid=84 fd1=6 fd2=7
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/explorer.exe' -> fd 185
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/explorer.exe' -> fd 185
+log: 00ec:fixme:actctx:parse_depend_manifests Could not find dependent assembly L"Microsoft.Windows.Common-Controls" (6.0.0.0)
+log: XWireServer: accepted X11 client connection (now 1 open)
+log: XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+log: vk32: FIRST trap - 32-bit guest libvulkan.so.1 mapped (witness fnId=0)
+log: vk32: gipa HIT : vkCreateInstance
+log: vk32: trap vkCreateInstance
+log: vk32: vkCreateInstance ok instance=0x324b0100
+log: vk32: gipa HIT : vkDestroyInstance
+log: vk32: gipa HIT : vkEnumeratePhysicalDevices
+log: vk32: gipa HIT : vkGetPhysicalDeviceProperties2KHR
+log: vk32: gipa HIT : vkGetPhysicalDeviceMemoryProperties
+log: vk32: gipa HIT : vkGetPhysicalDeviceMemoryProperties2KHR
+log: vk32: trap vkEnumeratePhysicalDevices
+log: vk32: trap vkEnumeratePhysicalDevices
+log: vk32: trap vkGetPhysicalDeviceProperties2KHR
+log: vk32: trap vkGetPhysicalDeviceMemoryProperties
+log: XWireServer: accepted X11 client connection (now 2 open)
+log: XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+log: BW64-DIAG pair enter pid=83 tid=84 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=84
+log: BW64-DIAG pair s1 pid=83 tid=84 fd=10
+log: BW64-DIAG pair s2 pid=83 tid=84 fd=11
+log: BW64-DIAG pair wired pid=83 tid=84 fd1=10 fd2=11
+log: BW64-DIAG pair enter pid=83 tid=85 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=85
+log: BW64-DIAG pair s1 pid=83 tid=85 fd=10
+log: BW64-DIAG pair s2 pid=83 tid=85 fd=12
+log: BW64-DIAG pair wired pid=83 tid=85 fd1=10 fd2=12
+log: BW64-DIAG pair enter pid=83 tid=85 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=85
+log: BW64-DIAG pair s1 pid=83 tid=85 fd=14
+log: BW64-DIAG pair s2 pid=83 tid=85 fd=15
+log: BW64-DIAG pair wired pid=83 tid=85 fd1=14 fd2=15
+log: BW64-DIAG pair enter pid=83 tid=84 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=84
+log: BW64-DIAG pair s1 pid=83 tid=84 fd=12
+log: BW64-DIAG pair s2 pid=83 tid=84 fd=16
+log: BW64-DIAG pair wired pid=83 tid=84 fd1=12 fd2=16
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=83 tid=86 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=86
+log: BW64-DIAG pair s1 pid=83 tid=86 fd=12
+log: BW64-DIAG pair s2 pid=83 tid=86 fd=17
+log: BW64-DIAG pair wired pid=83 tid=86 fd1=12 fd2=17
+log: BW64-DIAG pair enter pid=83 tid=86 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=86
+log: BW64-DIAG pair s1 pid=83 tid=86 fd=18
+log: BW64-DIAG pair s2 pid=83 tid=86 fd=19
+log: BW64-DIAG pair wired pid=83 tid=86 fd1=18 fd2=19
+log: XWireServer: accepted X11 client connection (now 3 open)
+log: XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+log: Xlib:  extension "SHAPE" missing on display ":0".
+log: Xlib:  extension "SHAPE" missing on display ":0".
+log: Xlib:  extension "SHAPE" missing on display ":0".
+log: Xlib:  extension "SHAPE" missing on display ":0".
+log: BW64-DIAG pair enter pid=83 tid=84 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=84
+log: BW64-DIAG pair s1 pid=83 tid=84 fd=20
+log: BW64-DIAG pair s2 pid=83 tid=84 fd=21
+log: BW64-DIAG pair wired pid=83 tid=84 fd1=20 fd2=21
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=83 tid=87 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=87
+log: BW64-DIAG pair s1 pid=83 tid=87 fd=20
+log: BW64-DIAG pair s2 pid=83 tid=87 fd=22
+log: BW64-DIAG pair wired pid=83 tid=87 fd1=20 fd2=22
+log: BW64-DIAG pair enter pid=83 tid=87 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=87
+log: BW64-DIAG pair s1 pid=83 tid=87 fd=23
+log: BW64-DIAG pair s2 pid=83 tid=87 fd=24
+log: BW64-DIAG pair wired pid=83 tid=87 fd1=23 fd2=24
+log: FsZip: 256 entry streams opened, 143 MB decompressed, 20 MB served from cache, 26 backward reopens
+log: BW64-DIAG pair enter pid=24 tid=26 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=26
+log: BW64-DIAG pair s1 pid=24 tid=26 fd=15
+log: BW64-DIAG pair s2 pid=24 tid=26 fd=18
+log: BW64-DIAG pair wired pid=24 tid=26 fd1=15 fd2=18
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=24 tid=88 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=88
+log: BW64-DIAG pair s1 pid=24 tid=88 fd=15
+log: BW64-DIAG pair s2 pid=24 tid=88 fd=20
+log: BW64-DIAG pair wired pid=24 tid=88 fd1=15 fd2=20
+log: BW64-DIAG pair enter pid=24 tid=88 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=88
+log: BW64-DIAG pair s1 pid=24 tid=88 fd=21
+log: BW64-DIAG pair s2 pid=24 tid=88 fd=35
+log: BW64-DIAG pair wired pid=24 tid=88 fd1=21 fd2=35
+log: BW64-DIAG pair enter pid=24 tid=88 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=88
+log: BW64-DIAG pair s1 pid=24 tid=88 fd=20
+log: BW64-DIAG pair s2 pid=24 tid=88 fd=38
+log: BW64-DIAG pair wired pid=24 tid=88 fd1=20 fd2=38
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=24 tid=89 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=89
+log: BW64-DIAG pair s1 pid=24 tid=89 fd=20
+log: BW64-DIAG pair s2 pid=24 tid=89 fd=39
+log: BW64-DIAG pair wired pid=24 tid=89 fd1=20 fd2=39
+log: BW64-DIAG pair enter pid=24 tid=89 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=89
+log: BW64-DIAG pair s1 pid=24 tid=89 fd=40
+log: BW64-DIAG pair s2 pid=24 tid=89 fd=41
+log: BW64-DIAG pair wired pid=24 tid=89 fd1=40 fd2=41
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/rpcss.exe' -> fd 234
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/rpcss.exe' -> fd 234
+log: BW64-DIAG pair enter pid=24 tid=89 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=24 tid=89
+log: BW64-DIAG pair s1 pid=24 tid=89 fd=39
+log: BW64-DIAG pair s2 pid=24 tid=89 fd=43
+log: BW64-DIAG pair wired pid=24 tid=89 fd1=39 fd2=43
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=236
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=237
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=236 fd2=237
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FED38
+log: BW64-DIAG pair enter pid=92 tid=93 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=93
+log: BW64-DIAG pair s1 pid=92 tid=93 fd=4
+log: BW64-DIAG pair s2 pid=92 tid=93 fd=5
+log: BW64-DIAG pair wired pid=92 tid=93 fd1=4 fd2=5
+log: BW64-DIAG pair enter pid=92 tid=93 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=93
+log: BW64-DIAG pair s1 pid=92 tid=93 fd=6
+log: BW64-DIAG pair s2 pid=92 tid=93 fd=7
+log: BW64-DIAG pair wired pid=92 tid=93 fd1=6 fd2=7
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/rpcss.exe' -> fd 239
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/rpcss.exe' -> fd 239
+log: BW64-DIAG pair enter pid=24 tid=26 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=26
+log: BW64-DIAG pair s1 pid=24 tid=26 fd=39
+log: BW64-DIAG pair s2 pid=24 tid=26 fd=42
+log: BW64-DIAG pair wired pid=24 tid=26 fd1=39 fd2=42
+log: BW64-DIAG pair enter pid=24 tid=94 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=94
+log: BW64-DIAG pair s1 pid=24 tid=94 fd=39
+log: BW64-DIAG pair s2 pid=24 tid=94 fd=43
+log: BW64-DIAG pair wired pid=24 tid=94 fd1=39 fd2=43
+log: BW64-DIAG pair enter pid=24 tid=94 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=94
+log: BW64-DIAG pair s1 pid=24 tid=94 fd=44
+log: BW64-DIAG pair s2 pid=24 tid=94 fd=45
+log: BW64-DIAG pair wired pid=24 tid=94 fd1=44 fd2=45
+log: BW64-DIAG pair enter pid=24 tid=94 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=94
+log: BW64-DIAG pair s1 pid=24 tid=94 fd=43
+log: BW64-DIAG pair s2 pid=24 tid=94 fd=46
+log: BW64-DIAG pair wired pid=24 tid=94 fd1=43 fd2=46
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=24 tid=95 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=95
+log: BW64-DIAG pair s1 pid=24 tid=95 fd=43
+log: BW64-DIAG pair s2 pid=24 tid=95 fd=47
+log: BW64-DIAG pair wired pid=24 tid=95 fd1=43 fd2=47
+log: BW64-DIAG pair enter pid=24 tid=95 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=95
+log: BW64-DIAG pair s1 pid=24 tid=95 fd=48
+log: BW64-DIAG pair s2 pid=24 tid=95 fd=49
+log: BW64-DIAG pair wired pid=24 tid=95 fd1=48 fd2=49
+log: BW64-DIAG pair enter pid=92 tid=93 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=93
+log: BW64-DIAG pair s1 pid=92 tid=93 fd=8
+log: BW64-DIAG pair s2 pid=92 tid=93 fd=9
+log: BW64-DIAG pair wired pid=92 tid=93 fd1=8 fd2=9
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=92 tid=96 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=96
+log: BW64-DIAG pair s1 pid=92 tid=96 fd=8
+log: BW64-DIAG pair s2 pid=92 tid=96 fd=10
+log: BW64-DIAG pair wired pid=92 tid=96 fd1=8 fd2=10
+log: BW64-DIAG pair enter pid=92 tid=96 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=96
+log: BW64-DIAG pair s1 pid=92 tid=96 fd=11
+log: BW64-DIAG pair s2 pid=92 tid=96 fd=12
+log: BW64-DIAG pair wired pid=92 tid=96 fd1=11 fd2=12
+log: BW64-DIAG pair enter pid=92 tid=96 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=96
+log: BW64-DIAG pair s1 pid=92 tid=96 fd=10
+log: BW64-DIAG pair s2 pid=92 tid=96 fd=13
+log: BW64-DIAG pair wired pid=92 tid=96 fd1=10 fd2=13
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=92 tid=97 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=97
+log: BW64-DIAG pair s1 pid=92 tid=97 fd=10
+log: BW64-DIAG pair s2 pid=92 tid=97 fd=14
+log: BW64-DIAG pair wired pid=92 tid=97 fd1=10 fd2=14
+log: BW64-DIAG pair enter pid=92 tid=97 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=97
+log: BW64-DIAG pair s1 pid=92 tid=97 fd=15
+log: BW64-DIAG pair s2 pid=92 tid=97 fd=16
+log: BW64-DIAG pair wired pid=92 tid=97 fd1=15 fd2=16
+log: BW64-DIAG pair enter pid=92 tid=97 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=97
+log: BW64-DIAG pair s1 pid=92 tid=97 fd=14
+log: BW64-DIAG pair s2 pid=92 tid=97 fd=17
+log: BW64-DIAG pair wired pid=92 tid=97 fd1=14 fd2=17
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=92 tid=98 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=98
+log: BW64-DIAG pair s1 pid=92 tid=98 fd=14
+log: BW64-DIAG pair s2 pid=92 tid=98 fd=18
+log: BW64-DIAG pair wired pid=92 tid=98 fd1=14 fd2=18
+log: BW64-DIAG pair enter pid=92 tid=98 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=98
+log: BW64-DIAG pair s1 pid=92 tid=98 fd=19
+log: BW64-DIAG pair s2 pid=92 tid=98 fd=20
+log: BW64-DIAG pair wired pid=92 tid=98 fd1=19 fd2=20
+log: BW64-DIAG pair enter pid=92 tid=97 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=97
+log: BW64-DIAG pair s1 pid=92 tid=97 fd=18
+log: BW64-DIAG pair s2 pid=92 tid=97 fd=21
+log: BW64-DIAG pair wired pid=92 tid=97 fd1=18 fd2=21
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=92 tid=99 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=99
+log: BW64-DIAG pair s1 pid=92 tid=99 fd=18
+log: BW64-DIAG pair s2 pid=92 tid=99 fd=22
+log: BW64-DIAG pair wired pid=92 tid=99 fd1=18 fd2=22
+log: BW64-DIAG pair enter pid=92 tid=99 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=99
+log: BW64-DIAG pair s1 pid=92 tid=99 fd=23
+log: BW64-DIAG pair s2 pid=92 tid=99 fd=24
+log: BW64-DIAG pair wired pid=92 tid=99 fd1=23 fd2=24
+log: BW64-DIAG pair enter pid=92 tid=98 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=98
+log: BW64-DIAG pair s1 pid=92 tid=98 fd=22
+log: BW64-DIAG pair s2 pid=92 tid=98 fd=25
+log: BW64-DIAG pair wired pid=92 tid=98 fd1=22 fd2=25
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=92 tid=100 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=100
+log: BW64-DIAG pair s1 pid=92 tid=100 fd=22
+log: BW64-DIAG pair s2 pid=92 tid=100 fd=26
+log: BW64-DIAG pair wired pid=92 tid=100 fd1=22 fd2=26
+log: BW64-DIAG pair enter pid=92 tid=100 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=100
+log: BW64-DIAG pair s1 pid=92 tid=100 fd=27
+log: BW64-DIAG pair s2 pid=92 tid=100 fd=28
+log: BW64-DIAG pair wired pid=92 tid=100 fd1=27 fd2=28
+log: BW64-DIAG pair enter pid=92 tid=100 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=100
+log: BW64-DIAG pair s1 pid=92 tid=100 fd=26
+log: BW64-DIAG pair s2 pid=92 tid=100 fd=29
+log: BW64-DIAG pair wired pid=92 tid=100 fd1=26 fd2=29
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=92 tid=101 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=101
+log: BW64-DIAG pair s1 pid=92 tid=101 fd=26
+log: BW64-DIAG pair s2 pid=92 tid=101 fd=30
+log: BW64-DIAG pair wired pid=92 tid=101 fd1=26 fd2=30
+log: BW64-DIAG pair enter pid=92 tid=101 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=101
+log: BW64-DIAG pair s1 pid=92 tid=101 fd=31
+log: BW64-DIAG pair s2 pid=92 tid=101 fd=32
+log: BW64-DIAG pair wired pid=92 tid=101 fd1=31 fd2=32
+log: XWireServer: accepted X11 client connection (now 4 open)
+log: XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/z:/home/username/apps/fna-runtime.exe' -> fd 264
+log: XWireServer: accepted X11 client connection (now 5 open)
+log: XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=19
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=20
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=19 fd2=20
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=10 tid=102 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=102
+log: BW64-DIAG pair s1 pid=10 tid=102 fd=19
+log: BW64-DIAG pair s2 pid=10 tid=102 fd=21
+log: BW64-DIAG pair wired pid=10 tid=102 fd1=19 fd2=21
+log: BW64-DIAG pair enter pid=10 tid=102 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=102
+log: BW64-DIAG pair s1 pid=10 tid=102 fd=22
+log: BW64-DIAG pair s2 pid=10 tid=102 fd=23
+log: BW64-DIAG pair wired pid=10 tid=102 fd1=22 fd2=23
+log: BW64-DIAG pair enter pid=40 tid=45 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=45
+log: BW64-DIAG pair s1 pid=40 tid=45 fd=23
+log: BW64-DIAG pair s2 pid=40 tid=45 fd=26
+log: BW64-DIAG pair wired pid=40 tid=45 fd1=23 fd2=26
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=40 tid=103 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=103
+log: BW64-DIAG pair s1 pid=40 tid=103 fd=23
+log: BW64-DIAG pair s2 pid=40 tid=103 fd=27
+log: BW64-DIAG pair wired pid=40 tid=103 fd1=23 fd2=27
+log: BW64-DIAG pair enter pid=40 tid=103 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=103
+log: BW64-DIAG pair s1 pid=40 tid=103 fd=28
+log: BW64-DIAG pair s2 pid=40 tid=103 fd=29
+log: BW64-DIAG pair wired pid=40 tid=103 fd1=28 fd2=29
+log: BW64-DIAG pair enter pid=40 tid=103 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=103
+log: BW64-DIAG pair s1 pid=40 tid=103 fd=27
+log: BW64-DIAG pair s2 pid=40 tid=103 fd=30
+log: BW64-DIAG pair wired pid=40 tid=103 fd1=27 fd2=30
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=40 tid=104 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=104
+log: BW64-DIAG pair s1 pid=40 tid=104 fd=27
+log: BW64-DIAG pair s2 pid=40 tid=104 fd=31
+log: BW64-DIAG pair wired pid=40 tid=104 fd1=27 fd2=31
+log: BW64-DIAG pair enter pid=40 tid=104 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=104
+log: BW64-DIAG pair s1 pid=40 tid=104 fd=32
+log: BW64-DIAG pair s2 pid=40 tid=104 fd=33
+log: BW64-DIAG pair wired pid=40 tid=104 fd1=32 fd2=33
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=21
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=24
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=21 fd2=24
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=10 tid=105 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=105
+log: BW64-DIAG pair s1 pid=10 tid=105 fd=21
+log: BW64-DIAG pair s2 pid=10 tid=105 fd=25
+log: BW64-DIAG pair wired pid=10 tid=105 fd1=21 fd2=25
+log: BW64-DIAG pair enter pid=10 tid=105 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=105
+log: BW64-DIAG pair s1 pid=10 tid=105 fd=26
+log: BW64-DIAG pair s2 pid=10 tid=105 fd=27
+log: BW64-DIAG pair wired pid=10 tid=105 fd1=26 fd2=27
+log: 0024:fixme:xinput:XInputGetBatteryInformation index 0, type 0, battery 784DD554.
+log: 0024:trace:opengl:wglChoosePixelFormat 2D010048 0031F6E0: size 40 version 1 flags 37 type 0 color 24 8,8,8,8 accum 0 depth 24 stencil 8 aux 0
+log: 0024:trace:opengl:wglDescribePixelFormat hdc 2D010048, index 0, size 0, ppfd 00000000
+log: gl64: call fnId=0
+log: gl64: FIRST trap fnId=0 (guest libGL.so.1 loaded)
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=0.0s
+log: gl64 PROC HIT  glXChooseVisual args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXCopyContext args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXCreateContext args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXGetCurrentContext args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXGetCurrentDrawable args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXDestroyContext args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXIsDirect args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXMakeCurrent args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXSwapBuffers args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXQueryVersion args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXGetClientString args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXQueryExtensionsString args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXQueryServerString args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXCreatePbuffer args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXCreateNewContext args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXDestroyPbuffer args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXMakeContextCurrent args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXGetFBConfigs args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXCreatePixmap args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXDestroyPixmap args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXCreateWindow args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXDestroyWindow args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXCreateContextAttribsARB args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXSwapIntervalEXT args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXSwapIntervalMESA args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXSwapIntervalSGI args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC MISS glXAllocateMemoryNV args=0,0,0,0
+log: gl64 PROC unsupported glXAllocateMemoryNV: glXGetProcAddressARB returned NULL
+log: gl64: call fnId=400
+log: gl64 PROC MISS glXFreeMemoryNV args=0,0,0,0
+log: gl64 PROC unsupported glXFreeMemoryNV: glXGetProcAddressARB returned NULL
+log: gl64: call fnId=4
+log: gl64 PHASE: proc-burst end t=0.0s n=28
+log: gl64: call fnId=5
+log: gl64: WebGPU context unavailable; continuing with WebGL2
+error: WARNING: using emscripten GL immediate mode emulation. This is very limited in what it supports
+log: gl64: GLImmediate init rc=3002 (rc%100: 2=init-ok 3=init-threw +4=quadIndexBuf +10=matrix +20=vbuf +40=rendererCache fallback; rc/100=matrix.length)
+log: gl64: host GL up (WebGL2) — vendor='WebKit' renderer='WebKit WebGL' version='OpenGL ES 3.0 (WebGL 2.0 (OpenGL ES 3.0 Chromium))'
+log: gl64: ensureContext OK (emCtx=857538584)
+log: gl64 PHASE: create-context t=0.1s
+log: gl64: call fnId=12
+log: gl64 PHASE: make-current t=0.1s drawable=10485797
+log: gl64: call fnId=620
+log: gl64: call fnId=214
+log: gl64: call fnId=214
+log: gl64: call fnId=214
+log: gl64: call fnId=1
+log: gl64: call fnId=3
+log: gl64: call fnId=16
+log: 0024:trace:wgl:X11DRV_WineGL_InitOpenglInfo GL version             : 3.3 Boxedwine64.
+log: 0024:trace:wgl:X11DRV_WineGL_InitOpenglInfo GL renderer            : Boxedwine64 GL (WebGL2).
+log: 0024:trace:wgl:X11DRV_WineGL_InitOpenglInfo GLX version            : 1.4.
+log: 0024:trace:wgl:X11DRV_WineGL_InitOpenglInfo Server GLX version     : 1.4.
+log: 0024:trace:wgl:X11DRV_WineGL_InitOpenglInfo Server GLX vendor:     : Boxedwine64.
+log: 0024:trace:wgl:X11DRV_WineGL_InitOpenglInfo Client GLX version     : 1.4.
+log: 0024:trace:wgl:X11DRV_WineGL_InitOpenglInfo Client GLX vendor:     : Boxedwine64.
+log: 0024:trace:wgl:X11DRV_WineGL_InitOpenglInfo Direct rendering enabled: True
+log: gl64: call fnId=12
+log: gl64 PHASE: make-current t=0.1s drawable=0
+log: gl64: call fnId=15
+log: gl64 PHASE: destroy-context t=0.1s
+log: XWire: first window mapped (present sink=SDL)
+log: 0024:trace:wgl:init_opengl GLX is up and running error_base = 0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=0.1s
+log: gl64 PROC HIT  glXChooseFBConfig args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXGetFBConfigAttrib args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXGetVisualFromFBConfig args=0,0,0,0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glXQueryDrawable args=0,0,0,0
+log: 0024:trace:wgl:register_extension 'WGL_ARB_create_context'
+log: 0024:trace:wgl:register_extension 'WGL_ARB_create_context_profile'
+log: 0024:trace:wgl:register_extension 'WGL_ARB_extensions_string'
+log: 0024:trace:wgl:register_extension 'WGL_ARB_make_current_read'
+log: 0024:trace:wgl:register_extension 'WGL_ARB_pbuffer'
+log: 0024:trace:wgl:register_extension 'WGL_ARB_pixel_format'
+log: 0024:trace:wgl:register_extension 'WGL_ARB_render_texture'
+log: 0024:trace:wgl:register_extension 'WGL_EXT_extensions_string'
+log: 0024:trace:wgl:register_extension 'WGL_EXT_swap_control'
+log: 0024:trace:wgl:register_extension 'WGL_WINE_pixel_format_passthrough'
+log: gl64: call fnId=8
+log: gl64 PHASE: proc-burst end t=0.1s n=4
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: 0024:trace:wgl:init_pixel_formats Found 0 bitmap capable fbconfigs
+log: gl64: call fnId=9
+log: gl64: call fnId=4
+log: 0024:trace:wgl:init_pixel_formats Found onscreen format FBCONFIG_ID 0x5100 corresponding to iPixelFormat 1 at GLX index 0
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=4
+log: 0024:trace:wgl:get_pixel_format Returning fmt_id=0x5100 for iPixelFormat=1
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x8018 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x8017 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: gl64: call fnId=9
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x25 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: gl64: call fnId=9
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x26 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: gl64: call fnId=9
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x27 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: gl64: call fnId=9
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x28 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: gl64: call fnId=9
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x24 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: gl64: call fnId=9
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x186a0 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: gl64: call fnId=9
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x186a1 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: gl64: call fnId=9
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x20b2 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: gl64: call fnId=9
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x20b0 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: 0024:trace:wgl:dump_PIXELFORMATDESCRIPTOR size 40 version 1 flags 32805 type 0 color 32 8,8,8,8 accum 0 depth 24 stencil 8 aux 0 PFD_DOUBLEBUFFER PFD_DRAW_TO_WINDOW PFD_SUPPORT_OPENGL PFD_SUPPORT_COMPOSITION 
+log: 0024:trace:opengl:wglDescribePixelFormat hdc 2D010048, index 1, size 1, ppfd 0031F698
+log: 0024:trace:opengl:wglChoosePixelFormat returning 1
+log: 0024:trace:opengl:wglSetPixelFormat hdc 2D010048, ipfd 1, ppfd 0031F6E0
+log: 0024:trace:wgl:set_pixel_format (0x2d010048,1)
+log: 0024:trace:wgl:get_pixel_format Returning fmt_id=0x5100 for iPixelFormat=1
+log: gl64: call fnId=9
+log: Xlib:  extension "SHAPE" missing on display ":0".
+log: 0024:trace:wgl:create_gl_drawable 0x1006a created client a00028 drawable a00028
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: 0024:trace:wgl:set_win_format created GL drawable a00028 for win 0x1006a fbconfig 0x5100 visual id 0x21 drawable type 0x5
+log: 0024:trace:opengl:wglCreateContext hDc 2D010048
+log: gl64: call fnId=5
+log: gl64 PHASE: create-context t=0.2s
+log: 0024:trace:wgl:glxdrv_wglCreateContext 0x2d010048 -> 0x106d7ab0
+log: 0024:trace:opengl:wglMakeCurrent hDc 2D010048, newContext 00011000
+log: 0024:trace:wgl:glxdrv_wglMakeCurrent (0x2d010048,0x106d7ab0)
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: 0024:trace:wgl:glxdrv_wglMakeCurrent hdc 0x2d010048 drawable a00028 fmt 0x106d7810 ctx 0x5006 fbconfig 0x5100 visual id 0x21 drawable type 0x5
+log: gl64: call fnId=12
+log: gl64 PHASE: make-current t=0.2s drawable=10485800
+log: 0024:trace:wgl:glxdrv_wglMakeCurrent 0x2d010048,0x106d7ab0 returning 1
+log: 0024:trace:opengl:wglGetProcAddress returning wglGetExtensionsStringARB -> 778619C0
+log: 0024:trace:opengl:wglGetExtensionsStringARB hdc 2D010048
+log: 0024:trace:wgl:X11DRV_wglGetExtensionsStringARB () returning "WGL_ARB_create_context WGL_ARB_create_context_profile WGL_ARB_extensions_string WGL_ARB_make_current_read WGL_ARB_pbuffer WGL_ARB_pixel_format WGL_ARB_render_texture WGL_EXT_extensions_string WGL_EXT_swap_control WGL_WINE_pixel_format_passthrough"
+log: 0024:trace:wgl:X11DRV_wglGetExtensionsStringARB () returning "WGL_ARB_create_context WGL_ARB_create_context_profile WGL_ARB_extensions_string WGL_ARB_make_current_read WGL_ARB_pbuffer WGL_ARB_pixel_format WGL_ARB_render_texture WGL_EXT_extensions_string WGL_EXT_swap_control WGL_WINE_pixel_format_passthrough"
+log: 0024:trace:opengl:wglGetProcAddress returning wglChoosePixelFormatARB -> 77860BC0
+log: 0024:trace:opengl:wglGetProcAddress returning wglGetPixelFormatAttribivARB -> 77861F90
+log: 0024:trace:opengl:wglGetProcAddress returning wglSwapIntervalEXT -> 77863270
+log: 0024:trace:opengl:wglGetProcAddress returning wglGetSwapIntervalEXT -> 77862310
+log: 0024:trace:opengl:wglMakeCurrent hDc 2D010048, newContext 00000000
+log: 0024:trace:wgl:glxdrv_wglMakeCurrent ((nil),(nil))
+log: gl64: call fnId=12
+log: gl64 PHASE: make-current t=0.2s drawable=0
+log: 0024:trace:opengl:wglDeleteContext oldContext 00011000
+log: 0024:trace:wgl:glxdrv_wglDeleteContext (0x106d7ab0)
+log: gl64: call fnId=15
+log: gl64 PHASE: destroy-context t=0.2s
+log: 0024:trace:wgl:release_gl_drawable destroying a00028 drawable a00028
+log: 0024:fixme:win:RegisterTouchWindow hwnd 0002006A, flags 0x3 stub!
+log: 0024:trace:opengl:wglChoosePixelFormat 07010056 0031F424: size 40 version 1 flags 37 type 0 color 24 8,8,8,8 accum 0 depth 24 stencil 8 aux 0
+log: 0024:trace:opengl:wglDescribePixelFormat hdc 07010056, index 0, size 0, ppfd 00000000
+log: 0024:trace:wgl:get_pixel_format Returning fmt_id=0x5100 for iPixelFormat=1
+log: gl64: call fnId=9
+log: bw64: METRICS {"v":1,"uptimeMs":1794217473055,"winMs":648.8,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":0,"count":0,"fps":null,"frameMs":null,"path":"none"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":95,"ms":171.43},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: 0024:trace:wgl:dump_PIXELFORMATDESCRIPTOR size 40 version 1 flags 32805 type 0 color 32 8,8,8,8 accum 0 depth 24 stencil 8 aux 0 PFD_DOUBLEBUFFER PFD_DRAW_TO_WINDOW PFD_SUPPORT_OPENGL PFD_SUPPORT_COMPOSITION 
+log: 0024:trace:opengl:wglDescribePixelFormat hdc 07010056, index 1, size 1, ppfd 0031F3D4
+log: 0024:trace:opengl:wglChoosePixelFormat returning 1
+log: 0024:trace:opengl:wglSetPixelFormat hdc 07010056, ipfd 1, ppfd 0031F424
+log: 0024:trace:wgl:set_pixel_format (0x7010056,1)
+log: 0024:trace:wgl:get_pixel_format Returning fmt_id=0x5100 for iPixelFormat=1
+log: gl64: call fnId=9
+log: 0024:trace:wgl:create_gl_drawable 0x10072 created client a00031 drawable a00031
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: 0024:trace:wgl:set_win_format created GL drawable a00031 for win 0x10072 fbconfig 0x5100 visual id 0x21 drawable type 0x5
+log: 0024:trace:opengl:wglCreateContext hDc 07010056
+log: gl64: call fnId=5
+log: gl64 PHASE: create-context t=0.7s
+log: 0024:trace:wgl:glxdrv_wglCreateContext 0x7010056 -> 0x106d8c30
+log: 0024:trace:opengl:wglMakeCurrent hDc 07010056, newContext 00021000
+log: 0024:trace:wgl:glxdrv_wglMakeCurrent (0x7010056,0x106d8c30)
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: 0024:trace:wgl:glxdrv_wglMakeCurrent hdc 0x7010056 drawable a00031 fmt 0x106d7810 ctx 0x5007 fbconfig 0x5100 visual id 0x21 drawable type 0x5
+log: gl64: call fnId=12
+log: gl64 PHASE: make-current t=0.7s drawable=10485809
+log: 0024:trace:wgl:glxdrv_wglMakeCurrent 0x7010056,0x106d8c30 returning 1
+log: 0024:trace:opengl:wglChoosePixelFormatARB hdc 07010056, attribs_int 0031F51C, attribs_float 0031F4C8, max_formats 1, formats 0031F418, num_formats 0031F420
+log: 0024:trace:opengl:wglMakeCurrent hDc 07010056, newContext 00000000
+log: 0024:trace:wgl:glxdrv_wglMakeCurrent ((nil),(nil))
+log: gl64: call fnId=12
+log: gl64 PHASE: make-current t=0.7s drawable=0
+log: 0024:trace:opengl:wglDeleteContext oldContext 00021000
+log: 0024:trace:wgl:glxdrv_wglDeleteContext (0x106d8c30)
+log: gl64: call fnId=15
+log: gl64 PHASE: destroy-context t=0.7s
+log: 0024:trace:wgl:release_gl_drawable destroying a00031 drawable a00031
+log: 0024:trace:opengl:wglSetPixelFormat hdc 46010048, ipfd 1, ppfd 0031F4CC
+log: 0024:trace:wgl:set_pixel_format (0x46010048,1)
+log: 0024:trace:wgl:get_pixel_format Returning fmt_id=0x5100 for iPixelFormat=1
+log: gl64: call fnId=9
+log: 0024:trace:wgl:create_gl_drawable 0x2006a created client a00034 drawable a00034
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: 0024:trace:wgl:set_win_format created GL drawable a00034 for win 0x2006a fbconfig 0x5100 visual id 0x21 drawable type 0x5
+log: 0024:trace:opengl:wglCreateContext hDc 46010048
+log: gl64: call fnId=5
+log: gl64 PHASE: create-context t=6.8s
+log: 0024:trace:wgl:glxdrv_wglCreateContext 0x46010048 -> 0x106d9510
+log: 0024:trace:opengl:wglMakeCurrent hDc 46010048, newContext 00031000
+log: 0024:trace:wgl:glxdrv_wglMakeCurrent (0x46010048,0x106d9510)
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: gl64: call fnId=9
+log: 0024:trace:wgl:glxdrv_wglMakeCurrent hdc 0x46010048 drawable a00034 fmt 0x106d7810 ctx 0x5008 fbconfig 0x5100 visual id 0x21 drawable type 0x5
+log: gl64: call fnId=12
+log: gl64 PHASE: make-current t=6.9s drawable=10485812
+log: 0024:trace:wgl:glxdrv_wglMakeCurrent 0x46010048,0x106d9510 returning 1
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetString unknown
+log: 0024:trace:opengl:glGetString name 7938
+log: gl64: call fnId=214
+log: gl64: call fnId=214
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetIntegerv unknown
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=6.9s
+log: gl64 PROC HIT  glBindFramebuffer args=0,0,0,0
+log: 0024:trace:opengl:filter_extensions_list GL_EXTENSIONS:
+log: 0024:trace:opengl:filter_extensions_list ++ GL_ARB_multitexture
+log: 0024:trace:opengl:filter_extensions_list ++ GL_ARB_vertex_buffer_object
+log: 0024:trace:opengl:filter_extensions_list ++ GL_ARB_texture_non_power_of_two
+log: 0024:trace:opengl:filter_extensions_list ++ GL_ARB_shader_objects
+log: 0024:trace:opengl:filter_extensions_list ++ GL_ARB_shading_language_100
+log: 0024:trace:opengl:filter_extensions_list ++ GL_ARB_vertex_shader
+log: 0024:trace:opengl:filter_extensions_list ++ GL_ARB_fragment_shader
+log: 0024:trace:opengl:filter_extensions_list ++ GL_ARB_sampler_objects
+log: 0024:trace:opengl:filter_extensions_list ++ GL_ARB_framebuffer_object
+log: 0024:trace:opengl:filter_extensions_list ++ GL_ARB_uniform_buffer_object
+log: 0024:trace:opengl:filter_extensions_list ++ GL_ARB_draw_buffers
+log: 0024:trace:opengl:filter_extensions_list ++ GL_ARB_instanced_arrays
+log: 0024:trace:opengl:filter_extensions_list ++ GL_ARB_polygon_offset_clamp
+log: 0024:trace:opengl:filter_extensions_list ++ GL_ARB_draw_buffers_blend
+log: 0024:trace:opengl:filter_extensions_list ++ GL_ARB_texture_cube_map_array
+log: 0024:trace:opengl:filter_extensions_list ++ GL_ARB_texture_storage
+log: 0024:trace:opengl:filter_extensions_list ++ GL_ARB_texture_storage_multisample
+log: 0024:trace:opengl:filter_extensions_list ++ GL_ARB_buffer_storage
+log: 0024:trace:opengl:filter_extensions_list ++ WGL_EXT_extensions_string
+log: 0024:trace:opengl:filter_extensions_list ++ WGL_EXT_swap_control
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glGetStringi args=0,0,0,0
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=6.9s n=2
+log: 0024:trace:opengl:filter_extensions_index GL_EXTENSIONS:
+log: 0024:trace:opengl:filter_extensions_index ++ GL_ARB_multitexture
+log: 0024:trace:opengl:filter_extensions_index ++ GL_ARB_vertex_buffer_object
+log: 0024:trace:opengl:filter_extensions_index ++ GL_ARB_texture_non_power_of_two
+log: 0024:trace:opengl:filter_extensions_index ++ GL_ARB_shader_objects
+log: 0024:trace:opengl:filter_extensions_index ++ GL_ARB_shading_language_100
+log: 0024:trace:opengl:filter_extensions_index ++ GL_ARB_vertex_shader
+log: 0024:trace:opengl:filter_extensions_index ++ GL_ARB_fragment_shader
+log: 0024:trace:opengl:filter_extensions_index ++ GL_ARB_sampler_objects
+log: 0024:trace:opengl:filter_extensions_index ++ GL_ARB_framebuffer_object
+log: 0024:trace:opengl:filter_extensions_index ++ GL_ARB_uniform_buffer_object
+log: 0024:trace:opengl:filter_extensions_index ++ GL_ARB_draw_buffers
+log: 0024:trace:opengl:filter_extensions_index ++ GL_ARB_instanced_arrays
+log: 0024:trace:opengl:filter_extensions_index ++ GL_ARB_polygon_offset_clamp
+log: 0024:trace:opengl:filter_extensions_index ++ GL_ARB_draw_buffers_blend
+log: 0024:trace:opengl:filter_extensions_index ++ GL_ARB_texture_cube_map_array
+log: 0024:trace:opengl:filter_extensions_index ++ GL_ARB_texture_storage
+log: 0024:trace:opengl:filter_extensions_index ++ GL_ARB_texture_storage_multisample
+log: 0024:trace:opengl:filter_extensions_index ++ GL_ARB_buffer_storage
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_framebuffer_object GL_VERSION_3_0'
+log: 0024:trace:opengl:wglGetProcAddress returning glBindFramebuffer -> 777B8620
+log: 0024:trace:opengl:glGetIntegerv pname 36006, data 0031F534
+log: gl64: call fnId=215
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=6.9s
+log: gl64 PROC HIT  glGetFramebufferAttachmentParameteriv args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_framebuffer_object GL_VERSION_3_0'
+log: 0024:trace:opengl:wglGetProcAddress returning glGetFramebufferAttachmentParameteriv -> 777E10A0
+log: 0024:trace:opengl:glGetFramebufferAttachmentParameteriv target 36160, attachment 6145, pname 33302, params 0031F598
+log: gl64: call fnId=649
+log: gl64 PHASE: proc-burst end t=6.9s n=1
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetError unknown
+log: 0024:trace:opengl:glGetError 
+log: gl64: call fnId=213
+log: gl64 GLERR 0x500 after recent fnIds [214 215 400 649]
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetString unknown
+log: 0024:trace:opengl:glGetString name 7938
+log: gl64: call fnId=214
+log: gl64: call fnId=214
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetIntegerv unknown
+log: 0024:trace:opengl:wglGetProcAddress returning glBindFramebuffer -> 777B8620
+log: 0024:trace:opengl:glGetIntegerv pname 36006, data 0031F534
+log: gl64: call fnId=215
+log: 0024:trace:opengl:wglGetProcAddress returning glGetFramebufferAttachmentParameteriv -> 777E10A0
+log: 0024:trace:opengl:glGetFramebufferAttachmentParameteriv target 36160, attachment 6146, pname 33303, params 0031F594
+log: gl64: call fnId=649
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetError unknown
+log: 0024:trace:opengl:glGetError 
+log: gl64: call fnId=213
+log: gl64 GLERR 0x500 after recent fnIds [400 214 215 649]
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetString unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetIntegerv unknown
+log: 0024:trace:opengl:glGetIntegerv pname 32937, data 00E90FE8
+log: gl64: call fnId=215
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetError unknown
+log: 0024:trace:opengl:glGetError 
+log: gl64: call fnId=213
+log: 0024:trace:opengl:wglSwapIntervalEXT interval 1
+log: 0024:trace:wgl:X11DRV_wglSwapIntervalEXT (1)
+log: 0024:warn:wgl:set_swap_interval Request to adjust swap interval is not handled
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetString unknown
+log: 0024:trace:opengl:glGetString name 7937
+log: gl64: call fnId=214
+log: gl64: call fnId=214
+log: 0024:trace:opengl:glGetString name 7938
+log: gl64: call fnId=214
+log: gl64: call fnId=214
+log: 0024:trace:opengl:glGetString name 7936
+log: gl64: call fnId=214
+log: gl64: call fnId=214
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.0s
+log: gl64 PROC HIT  glActiveTexture args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_1_3'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.0s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glActiveTexture -> 777B5530
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.0s
+log: gl64 PROC HIT  glBindBuffer args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_1_5'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.0s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glBindBuffer -> 777B77B0
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glBindTexture unknown
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.0s
+log: gl64 PROC HIT  glBlendColor args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_imaging GL_VERSION_1_4'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.0s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glBlendColor -> 777BADA0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.0s
+log: gl64 PROC HIT  glBlendEquationSeparate args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.0s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glBlendEquationSeparate -> 777BB2F0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.0s
+log: gl64 PROC HIT  glBlendFuncSeparate args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_1_4'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.0s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glBlendFuncSeparate -> 777BBA30
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.0s
+log: gl64 PROC HIT  glBufferData args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_1_5'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.0s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glBufferData -> 777BC8C0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.0s
+log: gl64 PROC HIT  glBufferSubData args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_1_5'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.0s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glBufferSubData -> 777BD060
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glClear unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glClearColor unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glClearStencil unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glColorMask unknown
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.0s
+log: gl64 PROC HIT  glDeleteBuffers args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_1_5'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.0s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glDeleteBuffers -> 777CCA90
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glDeleteTextures unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glDepthFunc unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glDepthMask unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glDisable unknown
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.0s
+log: gl64 PROC HIT  glDisableVertexAttribArray args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.0s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glDisableVertexAttribArray -> 777CFD50
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glDrawArrays unknown
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.0s
+log: gl64 PROC HIT  glDrawBuffers args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.0s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glDrawBuffers -> 777D0A70
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.0s
+log: gl64 PROC HIT  glDrawRangeElements args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_1_2'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.0s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glDrawRangeElements -> 777D20C0
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glEnable unknown
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.0s
+log: gl64 PROC HIT  glEnableVertexAttribArray args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.0s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glEnableVertexAttribArray -> 777D3B60
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glFrontFace unknown
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glGenBuffers args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_1_5'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glGenBuffers -> 777DA600
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGenTextures unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetIntegerv unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glPixelStorei unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glPolygonOffset unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glReadPixels unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glScissor unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glStencilFunc unknown
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glStencilFuncSeparate args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glStencilFuncSeparate -> 7782FDD0
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glStencilOp unknown
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glStencilOpSeparate args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glStencilOpSeparate -> 77830210
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glStencilMask unknown
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glCompressedTexImage2D args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_1_3'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glCompressedTexImage2D -> 777C54D0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glCompressedTexSubImage2D args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_1_3'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glCompressedTexSubImage2D -> 777C5BB0
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glTexImage2D unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glTexParameterf unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glTexParameteri unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glTexSubImage2D unknown
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glVertexAttribPointer args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glVertexAttribPointer -> 778574F0
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glViewport unknown
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glBindVertexArray args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_vertex_array_object GL_VERSION_3_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glBindVertexArray -> 777B9A90
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glDeleteVertexArrays args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_vertex_array_object GL_VERSION_3_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glDeleteVertexArrays -> 777CE5B0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glGenVertexArrays args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_vertex_array_object GL_VERSION_3_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glGenVertexArrays -> 777DBAD0
+log: 0024:trace:opengl:wglGetProcAddress returning glGetStringi -> 777ED070
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glDrawElementsInstancedBaseVertex args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_draw_elements_base_vertex GL_VERSION_3_2'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glDrawElementsInstancedBaseVertex -> 777D1830
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glDrawRangeElementsBaseVertex args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_draw_elements_base_vertex GL_VERSION_3_2'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glDrawRangeElementsBaseVertex -> 777D21D0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glTexImage3D args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_1_2'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glTexImage3D -> 77837E70
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glTexSubImage3D args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_1_2'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glTexSubImage3D -> 7783A1E0
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glClearDepth unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glDepthRange unknown
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC MISS glClearDepthf args=0,0,0,0
+log: gl64 PROC unsupported glClearDepthf: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_ES2_compatibility GL_VERSION_4_1'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:warn:opengl:check_extension_support The function requires OpenGL version '4.1' while your drivers only provide '3.3'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_ES2_compatibility GL_VERSION_4_1 required for glClearDepthf not supported
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC MISS glClearDepthfOES args=0,0,0,0
+log: gl64 PROC unsupported glClearDepthfOES: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_OES_single_precision'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_OES_single_precision required for glClearDepthfOES not supported
+log: gl64: call fnId=400
+log: gl64 PROC MISS glDepthRangef args=0,0,0,0
+log: gl64 PROC unsupported glDepthRangef: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_ES2_compatibility GL_VERSION_4_1'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=2
+log: 0024:warn:opengl:check_extension_support The function requires OpenGL version '4.1' while your drivers only provide '3.3'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_ES2_compatibility GL_VERSION_4_1 required for glDepthRangef not supported
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC MISS glDepthRangefOES args=0,0,0,0
+log: gl64 PROC unsupported glDepthRangefOES: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_OES_single_precision'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_OES_single_precision required for glDepthRangefOES not supported
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glBeginQuery args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_1_5'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=2
+log: 0024:trace:opengl:wglGetProcAddress returning glBeginQuery -> 777B6FE0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glDeleteQueries args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_1_5'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glDeleteQueries -> 777CDB30
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glEndQuery args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_1_5'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glEndQuery -> 777D43F0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glGenQueries args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_1_5'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glGenQueries -> 777DB190
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glGetQueryObjectuiv args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_1_5'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glGetQueryObjectuiv -> 777EBB50
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glGetBufferSubData args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_1_5'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.1s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glGetBufferSubData -> 777DDB80
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetTexImage unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glPolygonMode unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glTexEnvi unknown
+log: 0024:trace:opengl:wglGetProcAddress returning glBindFramebuffer -> 777B8620
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.1s
+log: gl64 PROC HIT  glBindRenderbuffer args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_framebuffer_object GL_VERSION_3_0'
+log: 0024:trace:opengl:wglGetProcAddress returning glBindRenderbuffer -> 777B9050
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glDeleteFramebuffers args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_framebuffer_object GL_VERSION_3_0'
+log: 0024:trace:opengl:wglGetProcAddress returning glDeleteFramebuffers -> 777CCF10
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glDeleteRenderbuffers args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_framebuffer_object GL_VERSION_3_0'
+log: 0024:trace:opengl:wglGetProcAddress returning glDeleteRenderbuffers -> 777CDD70
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glFramebufferRenderbuffer args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_framebuffer_object GL_VERSION_3_0'
+log: 0024:trace:opengl:wglGetProcAddress returning glFramebufferRenderbuffer -> 777D8C90
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glFramebufferTexture2D args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_framebuffer_object GL_VERSION_3_0'
+log: 0024:trace:opengl:wglGetProcAddress returning glFramebufferTexture2D -> 777D9430
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glGenerateMipmap args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_framebuffer_object GL_VERSION_3_0'
+log: 0024:trace:opengl:wglGetProcAddress returning glGenerateMipmap -> 777DBD20
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glGenFramebuffers args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_framebuffer_object GL_VERSION_3_0'
+log: 0024:trace:opengl:wglGetProcAddress returning glGenFramebuffers -> 777DA9D0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glGenRenderbuffers args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_framebuffer_object GL_VERSION_3_0'
+log: 0024:trace:opengl:wglGetProcAddress returning glGenRenderbuffers -> 777DB3D0
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glRenderbufferStorage args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_framebuffer_object GL_VERSION_3_0'
+log: 0024:trace:opengl:wglGetProcAddress returning glRenderbufferStorage -> 77827A70
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glBlitFramebuffer args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_framebuffer_object GL_VERSION_3_0'
+log: 0024:trace:opengl:wglGetProcAddress returning glBlitFramebuffer -> 777BC280
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glRenderbufferStorageMultisample args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_framebuffer_object GL_VERSION_3_0'
+log: 0024:trace:opengl:wglGetProcAddress returning glRenderbufferStorageMultisample -> 77827C50
+log: gl64: call fnId=400
+log: gl64 PROC MISS glGetInternalformativ args=0,0,0,0
+log: gl64 PROC unsupported glGetInternalformativ: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_internalformat_query GL_VERSION_4_2'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=12
+log: 0024:warn:opengl:check_extension_support The function requires OpenGL version '4.2' while your drivers only provide '3.3'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_internalformat_query GL_VERSION_4_2 required for glGetInternalformativ not supported
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC MISS glInvalidateFramebuffer args=0,0,0,0
+log: gl64 PROC unsupported glInvalidateFramebuffer: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_invalidate_subdata GL_VERSION_4_3'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:warn:opengl:check_extension_support The function requires OpenGL version '4.3' while your drivers only provide '3.3'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_invalidate_subdata GL_VERSION_4_3 required for glInvalidateFramebuffer not supported
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC HIT  glDrawElementsInstanced args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_3_1'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glDrawElementsInstanced -> 777D1520
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC HIT  glVertexAttribDivisor args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_3_3'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glVertexAttribDivisor -> 77851D20
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC HIT  glColorMaski args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_3_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glColorMaski -> 777C2F70
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC MISS glSampleMaski args=0,0,0,0
+log: gl64 PROC unsupported glSampleMaski: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_texture_multisample GL_VERSION_3_2'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glSampleMaski not supported by driver
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC HIT  glDebugMessageCallback args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_KHR_debug GL_VERSION_4_3'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:warn:opengl:check_extension_support The function requires OpenGL version '4.3' while your drivers only provide '3.3'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_KHR_debug GL_VERSION_4_3 required for glDebugMessageCallback not supported
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glDebugMessageCallbackKHR unknown
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC HIT  glDebugMessageControl args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_KHR_debug GL_VERSION_4_3'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:warn:opengl:check_extension_support The function requires OpenGL version '4.3' while your drivers only provide '3.3'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_KHR_debug GL_VERSION_4_3 required for glDebugMessageControl not supported
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glDebugMessageControlKHR unknown
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC MISS glStringMarkerGREMEDY args=0,0,0,0
+log: gl64 PROC unsupported glStringMarkerGREMEDY: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_GREMEDY_string_marker'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_GREMEDY_string_marker required for glStringMarkerGREMEDY not supported
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetString unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetError unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetIntegerv unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glEnable unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glDisable unknown
+log: 0024:trace:opengl:wglGetProcAddress returning glGetStringi -> 777ED070
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glDeleteShader args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=2
+log: 0024:trace:opengl:wglGetProcAddress returning glDeleteShader -> 777CE070
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC HIT  glDeleteProgram args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glDeleteProgram -> 777CD830
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC HIT  glAttachShader args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glAttachShader -> 777B6930
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC HIT  glCompileShader args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glCompileShader -> 777C48E0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC HIT  glCreateShader args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glCreateShader -> 777CB1F0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC HIT  glCreateProgram args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glCreateProgram -> 777CAC90
+log: 0024:trace:opengl:wglGetProcAddress returning glDisableVertexAttribArray -> 777CFD50
+log: 0024:trace:opengl:wglGetProcAddress returning glEnableVertexAttribArray -> 777D3B60
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC HIT  glGetAttribLocation args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glGetAttribLocation -> 777DD220
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC HIT  glGetProgramInfoLog args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glGetProgramInfoLog -> 777E9A20
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC HIT  glGetShaderInfoLog args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glGetShaderInfoLog -> 777EC710
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC HIT  glGetShaderiv args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glGetShaderiv -> 777ECAD0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC HIT  glGetProgramiv args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glGetProgramiv -> 777EAEC0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC HIT  glGetUniformLocation args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glGetUniformLocation -> 777F03D0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC HIT  glLinkProgram args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.2s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glLinkProgram -> 777FC9A0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.2s
+log: gl64 PROC HIT  glShaderSource args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.3s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glShaderSource -> 7782E860
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.3s
+log: gl64 PROC HIT  glUniform1i args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.3s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glUniform1i -> 7783F250
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.3s
+log: gl64 PROC HIT  glUniform1iv args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.3s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glUniform1iv -> 7783F7F0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.3s
+log: gl64 PROC HIT  glUniform2f args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.3s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glUniform2f -> 778402E0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.3s
+log: gl64 PROC HIT  glUniform1f args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.3s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glUniform1f -> 7783EEB0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.3s
+log: gl64 PROC HIT  glUniform4fv args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.3s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glUniform4fv -> 77843390
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.3s
+log: gl64 PROC HIT  glUniform4iv args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.3s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glUniform4iv -> 77843DB0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.3s
+log: gl64 PROC HIT  glUseProgram args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_VERSION_2_0'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.3s n=1
+log: 0024:trace:opengl:wglGetProcAddress returning glUseProgram -> 77846A80
+log: 0024:trace:opengl:wglGetProcAddress returning glVertexAttribPointer -> 778574F0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.3s
+log: gl64 PROC MISS glDeleteObjectARB args=0,0,0,0
+log: gl64 PROC unsupported glDeleteObjectARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glDeleteObjectARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glAttachObjectARB args=0,0,0,0
+log: gl64 PROC unsupported glAttachObjectARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glAttachObjectARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glCompileShaderARB args=0,0,0,0
+log: gl64 PROC unsupported glCompileShaderARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glCompileShaderARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glCreateProgramObjectARB args=0,0,0,0
+log: gl64 PROC unsupported glCreateProgramObjectARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glCreateProgramObjectARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glCreateShaderObjectARB args=0,0,0,0
+log: gl64 PROC unsupported glCreateShaderObjectARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glCreateShaderObjectARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glGetInfoLogARB args=0,0,0,0
+log: gl64 PROC unsupported glGetInfoLogARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetInfoLogARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glGetObjectParameterivARB args=0,0,0,0
+log: gl64 PROC unsupported glGetObjectParameterivARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetObjectParameterivARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glGetUniformLocationARB args=0,0,0,0
+log: gl64 PROC unsupported glGetUniformLocationARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetUniformLocationARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glLinkProgramARB args=0,0,0,0
+log: gl64 PROC unsupported glLinkProgramARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glLinkProgramARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glShaderSourceARB args=0,0,0,0
+log: gl64 PROC unsupported glShaderSourceARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glShaderSourceARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glUniform1iARB args=0,0,0,0
+log: gl64 PROC unsupported glUniform1iARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glUniform1iARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glUniform1ivARB args=0,0,0,0
+log: gl64 PROC unsupported glUniform1ivARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glUniform1ivARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glUniform4fvARB args=0,0,0,0
+log: gl64 PROC unsupported glUniform4fvARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glUniform4fvARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glUniform4ivARB args=0,0,0,0
+log: gl64 PROC unsupported glUniform4ivARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glUniform4ivARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glUseProgramObjectARB args=0,0,0,0
+log: gl64 PROC unsupported glUseProgramObjectARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glUseProgramObjectARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glDisableVertexAttribArrayARB args=0,0,0,0
+log: gl64 PROC unsupported glDisableVertexAttribArrayARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_vertex_program GL_ARB_vertex_shader'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glDisableVertexAttribArrayARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glEnableVertexAttribArrayARB args=0,0,0,0
+log: gl64 PROC unsupported glEnableVertexAttribArrayARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_vertex_program GL_ARB_vertex_shader'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glEnableVertexAttribArrayARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glGetAttribLocationARB args=0,0,0,0
+log: gl64 PROC unsupported glGetAttribLocationARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_vertex_shader'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetAttribLocationARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glVertexAttribPointerARB args=0,0,0,0
+log: gl64 PROC unsupported glVertexAttribPointerARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_vertex_program GL_ARB_vertex_shader'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glVertexAttribPointerARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glVertexAttribPointerARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_vertex_program GL_ARB_vertex_shader'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glVertexAttribPointerARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glGetProgramivARB args=0,0,0,0
+log: gl64 PROC unsupported glGetProgramivARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_fragment_program GL_ARB_vertex_program'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_fragment_program GL_ARB_vertex_program required for glGetProgramivARB not supported
+log: gl64: call fnId=400
+log: gl64 PROC MISS glProgramLocalParameter4fvARB args=0,0,0,0
+log: gl64 PROC unsupported glProgramLocalParameter4fvARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_fragment_program GL_ARB_vertex_program'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_fragment_program GL_ARB_vertex_program required for glProgramLocalParameter4fvARB not supported
+log: gl64: call fnId=400
+log: gl64 PROC MISS glDeleteProgramsARB args=0,0,0,0
+log: gl64 PROC unsupported glDeleteProgramsARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_fragment_program GL_ARB_vertex_program'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_fragment_program GL_ARB_vertex_program required for glDeleteProgramsARB not supported
+log: gl64: call fnId=400
+log: gl64 PROC MISS glGenProgramsARB args=0,0,0,0
+log: gl64 PROC unsupported glGenProgramsARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_fragment_program GL_ARB_vertex_program'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_fragment_program GL_ARB_vertex_program required for glGenProgramsARB not supported
+log: gl64: call fnId=400
+log: gl64 PROC MISS glBindProgramARB args=0,0,0,0
+log: gl64 PROC unsupported glBindProgramARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_fragment_program GL_ARB_vertex_program'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_fragment_program GL_ARB_vertex_program required for glBindProgramARB not supported
+log: gl64: call fnId=400
+log: gl64 PROC MISS glProgramStringARB args=0,0,0,0
+log: gl64 PROC unsupported glProgramStringARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_fragment_program GL_ARB_vertex_program'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_fragment_program GL_ARB_vertex_program required for glProgramStringARB not supported
+log: gl64: call fnId=400
+log: gl64 PROC MISS glProgramLocalParameterI4ivNV args=0,0,0,0
+log: gl64 PROC unsupported glProgramLocalParameterI4ivNV: glXGetProcAddressARB returned NULL
+log: bw64: METRICS {"v":1,"uptimeMs":1794217479758,"winMs":503.0,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":0,"count":0,"fps":null,"frameMs":null,"path":"none"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":191,"ms":277.80},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_NV_gpu_program4'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_NV_gpu_program4 required for glProgramLocalParameterI4ivNV not supported
+log: gl64: call fnId=400
+log: gl64 PROC HIT  glVertexAttribDivisorARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_instanced_arrays'
+log: 0024:trace:opengl:wglGetProcAddress returning glVertexAttribDivisorARB -> 77851DE0
+log: gl64: call fnId=400
+log: gl64 PROC MISS glShaderBinary args=0,0,0,0
+log: gl64 PROC unsupported glShaderBinary: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_ES2_compatibility GL_VERSION_4_1'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.4s n=29
+log: 0024:warn:opengl:check_extension_support The function requires OpenGL version '4.1' while your drivers only provide '3.3'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_ES2_compatibility GL_VERSION_4_1 required for glShaderBinary not supported
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.4s
+log: gl64 PROC MISS glSpecializeShaderARB args=0,0,0,0
+log: gl64 PROC unsupported glSpecializeShaderARB: glXGetProcAddressARB returned NULL
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_gl_spirv'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_gl_spirv required for glSpecializeShaderARB not supported
+log: 0024:trace:opengl:glGetString name 7938
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.4s n=1
+log: gl64: call fnId=214
+log: 0024:trace:opengl:glGetIntegerv pname 33309, data 002CE214
+log: 0024:trace:opengl:glGetStringi name 7939, index 0
+log: 0024:trace:opengl:glGetStringi name 7939, index 1
+log: 0024:trace:opengl:glGetStringi name 7939, index 2
+log: 0024:trace:opengl:glGetStringi name 7939, index 3
+log: 0024:trace:opengl:glGetStringi name 7939, index 4
+log: 0024:trace:opengl:glGetStringi name 7939, index 5
+log: 0024:trace:opengl:glGetStringi name 7939, index 6
+log: 0024:trace:opengl:glGetStringi name 7939, index 7
+log: 0024:trace:opengl:glGetStringi name 7939, index 8
+log: 0024:trace:opengl:glGetStringi name 7939, index 9
+log: 0024:trace:opengl:glGetStringi name 7939, index 10
+log: 0024:trace:opengl:glGetStringi name 7939, index 11
+log: 0024:trace:opengl:glGetStringi name 7939, index 12
+log: 0024:trace:opengl:glGetStringi name 7939, index 13
+log: 0024:trace:opengl:glGetStringi name 7939, index 14
+log: 0024:trace:opengl:glGetStringi name 7939, index 15
+log: 0024:trace:opengl:glGetStringi name 7939, index 16
+log: 0024:trace:opengl:glGetStringi name 7939, index 17
+log: 0024:trace:opengl:glGetError 
+log: gl64: call fnId=213
+log: 0024:trace:opengl:glGetString name 35724
+log: gl64: call fnId=214
+log: gl64: call fnId=214
+log: 0024:trace:opengl:glGetError 
+log: gl64: call fnId=213
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetString unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetError unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetIntegerv unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glEnable unknown
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glDisable unknown
+log: 0024:trace:opengl:wglGetProcAddress returning glGetStringi -> 777ED070
+log: 0024:trace:opengl:wglGetProcAddress returning glDeleteShader -> 777CE070
+log: 0024:trace:opengl:wglGetProcAddress returning glDeleteProgram -> 777CD830
+log: 0024:trace:opengl:wglGetProcAddress returning glAttachShader -> 777B6930
+log: 0024:trace:opengl:wglGetProcAddress returning glCompileShader -> 777C48E0
+log: 0024:trace:opengl:wglGetProcAddress returning glCreateShader -> 777CB1F0
+log: 0024:trace:opengl:wglGetProcAddress returning glCreateProgram -> 777CAC90
+log: 0024:trace:opengl:wglGetProcAddress returning glDisableVertexAttribArray -> 777CFD50
+log: 0024:trace:opengl:wglGetProcAddress returning glEnableVertexAttribArray -> 777D3B60
+log: 0024:trace:opengl:wglGetProcAddress returning glGetAttribLocation -> 777DD220
+log: 0024:trace:opengl:wglGetProcAddress returning glGetProgramInfoLog -> 777E9A20
+log: 0024:trace:opengl:wglGetProcAddress returning glGetShaderInfoLog -> 777EC710
+log: 0024:trace:opengl:wglGetProcAddress returning glGetShaderiv -> 777ECAD0
+log: 0024:trace:opengl:wglGetProcAddress returning glGetProgramiv -> 777EAEC0
+log: 0024:trace:opengl:wglGetProcAddress returning glGetUniformLocation -> 777F03D0
+log: 0024:trace:opengl:wglGetProcAddress returning glLinkProgram -> 777FC9A0
+log: 0024:trace:opengl:wglGetProcAddress returning glShaderSource -> 7782E860
+log: 0024:trace:opengl:wglGetProcAddress returning glUniform1i -> 7783F250
+log: 0024:trace:opengl:wglGetProcAddress returning glUniform1iv -> 7783F7F0
+log: 0024:trace:opengl:wglGetProcAddress returning glUniform2f -> 778402E0
+log: 0024:trace:opengl:wglGetProcAddress returning glUniform1f -> 7783EEB0
+log: 0024:trace:opengl:wglGetProcAddress returning glUniform4fv -> 77843390
+log: 0024:trace:opengl:wglGetProcAddress returning glUniform4iv -> 77843DB0
+log: 0024:trace:opengl:wglGetProcAddress returning glUseProgram -> 77846A80
+log: 0024:trace:opengl:wglGetProcAddress returning glVertexAttribPointer -> 778574F0
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.4s
+log: gl64 PROC MISS glDeleteObjectARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glDeleteObjectARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glAttachObjectARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glAttachObjectARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glCompileShaderARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glCompileShaderARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glCreateProgramObjectARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glCreateProgramObjectARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glCreateShaderObjectARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glCreateShaderObjectARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glGetInfoLogARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetInfoLogARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glGetObjectParameterivARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetObjectParameterivARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glGetUniformLocationARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetUniformLocationARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glLinkProgramARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glLinkProgramARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glShaderSourceARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glShaderSourceARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glUniform1iARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glUniform1iARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glUniform1ivARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glUniform1ivARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glUniform4fvARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glUniform4fvARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glUniform4ivARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glUniform4ivARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glUseProgramObjectARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_shader_objects'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glUseProgramObjectARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glDisableVertexAttribArrayARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_vertex_program GL_ARB_vertex_shader'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glDisableVertexAttribArrayARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glEnableVertexAttribArrayARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_vertex_program GL_ARB_vertex_shader'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glEnableVertexAttribArrayARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glGetAttribLocationARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_vertex_shader'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glGetAttribLocationARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glVertexAttribPointerARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_vertex_program GL_ARB_vertex_shader'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glVertexAttribPointerARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glVertexAttribPointerARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_vertex_program GL_ARB_vertex_shader'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Function glVertexAttribPointerARB not supported by driver
+log: gl64: call fnId=400
+log: gl64 PROC MISS glGetProgramivARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_fragment_program GL_ARB_vertex_program'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_fragment_program GL_ARB_vertex_program required for glGetProgramivARB not supported
+log: gl64: call fnId=400
+log: gl64 PROC MISS glProgramLocalParameter4fvARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_fragment_program GL_ARB_vertex_program'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_fragment_program GL_ARB_vertex_program required for glProgramLocalParameter4fvARB not supported
+log: gl64: call fnId=400
+log: gl64 PROC MISS glDeleteProgramsARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_fragment_program GL_ARB_vertex_program'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_fragment_program GL_ARB_vertex_program required for glDeleteProgramsARB not supported
+log: gl64: call fnId=400
+log: gl64 PROC MISS glGenProgramsARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_fragment_program GL_ARB_vertex_program'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_fragment_program GL_ARB_vertex_program required for glGenProgramsARB not supported
+log: gl64: call fnId=400
+log: gl64 PROC MISS glBindProgramARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_fragment_program GL_ARB_vertex_program'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_fragment_program GL_ARB_vertex_program required for glBindProgramARB not supported
+log: gl64: call fnId=400
+log: gl64 PROC MISS glProgramStringARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_fragment_program GL_ARB_vertex_program'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_fragment_program GL_ARB_vertex_program required for glProgramStringARB not supported
+log: gl64: call fnId=400
+log: gl64 PROC MISS glProgramLocalParameterI4ivNV args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_NV_gpu_program4'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_NV_gpu_program4 required for glProgramLocalParameterI4ivNV not supported
+log: 0024:trace:opengl:wglGetProcAddress returning glVertexAttribDivisorARB -> 77851DE0
+log: gl64: call fnId=400
+log: gl64 PROC MISS glShaderBinary args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_ES2_compatibility GL_VERSION_4_1'
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.5s n=28
+log: 0024:warn:opengl:check_extension_support The function requires OpenGL version '4.1' while your drivers only provide '3.3'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_ES2_compatibility GL_VERSION_4_1 required for glShaderBinary not supported
+log: gl64: call fnId=400
+log: gl64 PHASE: proc-burst start t=7.5s
+log: gl64 PROC MISS glSpecializeShaderARB args=0,0,0,0
+log: 0024:trace:opengl:check_extension_support Checking for extension 'GL_ARB_gl_spirv'
+log: 0024:warn:opengl:wrap_wglGetProcAddress Extension GL_ARB_gl_spirv required for glSpecializeShaderARB not supported
+log: 0024:trace:opengl:glGetString name 7938
+log: gl64: call fnId=214
+log: gl64 PHASE: proc-burst end t=7.5s n=1
+log: gl64: call fnId=214
+log: 0024:trace:opengl:glGetIntegerv pname 33309, data 0031F520
+log: 0024:trace:opengl:glGetStringi name 7939, index 0
+log: 0024:trace:opengl:glGetStringi name 7939, index 1
+log: 0024:trace:opengl:glGetStringi name 7939, index 2
+log: 0024:trace:opengl:glGetStringi name 7939, index 3
+log: 0024:trace:opengl:glGetStringi name 7939, index 4
+log: 0024:trace:opengl:glGetStringi name 7939, index 5
+log: 0024:trace:opengl:glGetStringi name 7939, index 6
+log: 0024:trace:opengl:glGetStringi name 7939, index 7
+log: 0024:trace:opengl:glGetStringi name 7939, index 8
+log: 0024:trace:opengl:glGetStringi name 7939, index 9
+log: 0024:trace:opengl:glGetStringi name 7939, index 10
+log: 0024:trace:opengl:glGetStringi name 7939, index 11
+log: 0024:trace:opengl:glGetStringi name 7939, index 12
+log: 0024:trace:opengl:glGetStringi name 7939, index 13
+log: 0024:trace:opengl:glGetStringi name 7939, index 14
+log: 0024:trace:opengl:glGetStringi name 7939, index 15
+log: 0024:trace:opengl:glGetStringi name 7939, index 16
+log: 0024:trace:opengl:glGetStringi name 7939, index 17
+log: 0024:trace:opengl:glGetError 
+log: gl64: call fnId=213
+log: 0024:trace:opengl:glGetString name 35724
+log: gl64: call fnId=214
+log: gl64: call fnId=214
+log: 0024:trace:opengl:glGetError 
+log: gl64: call fnId=213
+log: 0024:trace:opengl:glGetIntegerv pname 34930, data 0031F53C
+log: gl64: call fnId=215
+log: 0024:trace:opengl:glGetString name 7939
+log: 0024:trace:opengl:glGetIntegerv pname 36183, data 00E90F90
+log: gl64: call fnId=215
+log: 0024:trace:opengl:glGetIntegerv pname 34930, data 0031F580
+log: gl64: call fnId=215
+log: 0024:trace:opengl:glGetIntegerv pname 34921, data 0031F574
+log: gl64: call fnId=215
+log: 0024:trace:opengl:glGetIntegerv pname 34852, data 0031F570
+log: gl64: call fnId=215
+log: 0024:trace:opengl:glGenFramebuffers n 1, framebuffers 00E91118
+log: gl64: call fnId=630
+log: 0024:trace:opengl:glGenFramebuffers n 1, framebuffers 00E9111C
+log: gl64: call fnId=630
+log: 0024:trace:opengl:glGenFramebuffers n 1, framebuffers 00E91120
+log: gl64: call fnId=630
+log: 0024:trace:opengl:glEnable cap 34913
+log: gl64: call fnId=204
+log: 0024:trace:opengl:glTexEnvi target 34913, pname 34914, param 1
+log: gl64: call fnId=877
+log: 0024:trace:opengl:glViewport x 0, y 0, width 640, height 480
+log: gl64: call fnId=203
+log: 0024:trace:opengl:glScissor x 0, y 0, width 640, height 480
+log: gl64: call fnId=543
+log: 0024:trace:opengl:glGenBuffers n 1, buffers 0031F654
+log: gl64: call fnId=470
+log: bw64: METRICS {"v":1,"uptimeMs":1794217480705,"winMs":946.9,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":0,"count":0,"fps":null,"frameMs":null,"path":"none"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":59,"ms":162.49},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: 0024:trace:opengl:glBindBuffer target 34962, buffer 4
+log: gl64: call fnId=471
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glGenBuffers n 1, buffers 0031F654
+log: gl64: call fnId=470
+log: 0024:trace:opengl:glBindBuffer target 34963, buffer 5
+log: gl64: call fnId=471
+log: 0024:trace:opengl:glBufferData target 34963, size 24576, data 00000000, usage 35044
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34963, offset 0, size 24576, data 03E01570
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glCreateShader type 35632
+log: gl64: call fnId=410
+log: 0024:trace:opengl:glShaderSource shader 6, count 1, string 00C38EC4, length 0031F558
+log: gl64: call fnId=411
+log: 0024:trace:opengl:glCompileShader shader 6
+log: gl64: call fnId=412
+log: 0024:trace:opengl:glGetShaderiv shader 6, pname 35713, params 0031F550
+log: gl64: call fnId=413
+log: 0024:trace:opengl:glCreateShader type 35633
+log: gl64: call fnId=410
+log: 0024:trace:opengl:glShaderSource shader 7, count 1, string 00C38F44, length 0031F558
+log: gl64: call fnId=411
+log: 0024:trace:opengl:glCompileShader shader 7
+log: gl64: call fnId=412
+log: 0024:trace:opengl:glGetShaderiv shader 7, pname 35713, params 0031F550
+log: gl64: call fnId=413
+log: 0024:trace:opengl:glGenTextures n 1, textures 00DA7BE8
+log: gl64: call fnId=561
+log: bw64: METRICS {"v":1,"uptimeMs":1794217481295,"winMs":590.0,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":0,"count":0,"fps":null,"frameMs":null,"path":"none"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":15,"ms":202.13},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: 0024:trace:opengl:glBindTexture target 3553, texture 268435459
+log: gl64: call fnId=562
+log: 0024:trace:opengl:glTexParameteri target 3553, pname 10242, param 10497
+log: gl64: call fnId=564
+log: 0024:trace:opengl:glTexParameteri target 3553, pname 10243, param 10497
+log: gl64: call fnId=564
+log: 0024:trace:opengl:glTexParameteri target 3553, pname 32882, param 10497
+log: gl64: call fnId=564
+log: 0024:trace:opengl:glTexParameteri target 3553, pname 10240, param 9729
+log: gl64: call fnId=564
+log: 0024:trace:opengl:glTexParameteri target 3553, pname 10241, param 9729
+log: gl64: call fnId=564
+log: 0024:trace:opengl:glTexParameteri target 3553, pname 33084, param 0
+log: gl64: call fnId=564
+log: 0024:trace:opengl:glTexParameterf target 3553, pname 34049, param 0.000000
+log: gl64: call fnId=565
+log: 0024:trace:opengl:glTexImage2D target 3553, level 0, internalformat 32856, width 1, height 1, border 0, format 6408, type 5121, pixels 00000000
+log: gl64: call fnId=566
+log: BW64-FAIL gl-packed-type type=0x1401 outcome=upload not unpacked (no packed layout model)
+log: gl64 TEX2D: target=0xde1 lvl=0 ifmt=0x8058 1x1 bd=0 fmt=0x1908 type=0x1401 bytes=0 err=0x0 tex=8
+log: 0024:trace:opengl:glTexSubImage2D target 3553, level 0, xoffset 0, yoffset 0, width 1, height 1, format 6408, type 5121, pixels 0141EB38
+log: gl64: call fnId=567
+log: 0024:trace:opengl:glGetTexImage target 3553, level 0, format 6408, type 5121, pixels 0141EB50
+log: gl64: call fnId=851
+log: gl64 READBACK: texture=1 target=0xde1 1x1x1 fmt=0x1908 type=0x1401 bytes=4 err=0x0
+log: 0024:warn:debugstr:OutputDebugStringA "fna-runtime: LOADED TEXTURE_ROUNDTRIP\n"
+log: XWire: first window mapped (present sink=SDL)
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=25
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=28
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=25 fd2=28
+log: BW64-DIAG pair enter pid=10 tid=106 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=106
+log: BW64-DIAG pair s1 pid=10 tid=106 fd=25
+log: BW64-DIAG pair s2 pid=10 tid=106 fd=29
+log: BW64-DIAG pair wired pid=10 tid=106 fd1=25 fd2=29
+log: BW64-DIAG pair enter pid=10 tid=106 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=106
+log: BW64-DIAG pair s1 pid=10 tid=106 fd=30
+log: BW64-DIAG pair s2 pid=10 tid=106 fd=31
+log: BW64-DIAG pair wired pid=10 tid=106 fd1=30 fd2=31
+log: BW64-DIAG pair enter pid=10 tid=106 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=106
+log: BW64-DIAG pair s1 pid=10 tid=106 fd=29
+log: BW64-DIAG pair s2 pid=10 tid=106 fd=32
+log: BW64-DIAG pair wired pid=10 tid=106 fd1=29 fd2=32
+log: BW64-DIAG pair enter pid=10 tid=107 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=107
+log: BW64-DIAG pair s1 pid=10 tid=107 fd=29
+log: BW64-DIAG pair s2 pid=10 tid=107 fd=33
+log: BW64-DIAG pair wired pid=10 tid=107 fd1=29 fd2=33
+log: BW64-DIAG pair enter pid=10 tid=107 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=107
+log: BW64-DIAG pair s1 pid=10 tid=107 fd=34
+log: BW64-DIAG pair s2 pid=10 tid=107 fd=35
+log: BW64-DIAG pair wired pid=10 tid=107 fd1=34 fd2=35
+log: 013c:fixme:msctf:ThreadMgr_ActivateEx Unimplemented flags 0x4
+log: 0024:err:ole:StdMarshalImpl_MarshalInterface Failed to create ifstub, hr 0x80004002
+log: 0024:err:ole:CoMarshalInterface Failed to marshal the interface {ea1ea136-19df-11d7-a6d2-00065b84435c}, hr 0x80004002
+log: 0024:fixme:imm:NotifyIME himc 00010054, action 0x11, index 0, value 0 stub!
+log: 0024:err:ole:StdMarshalImpl_MarshalInterface Failed to create ifstub, hr 0x80004002
+log: 0024:err:ole:CoMarshalInterface Failed to marshal the interface {ea1ea136-19df-11d7-a6d2-00065b84435c}, hr 0x80004002
+log: fszipurl: 113 MB fetched lazily so far
+log: 0024:trace:opengl:glClearColor red 0.098039, green 0.215686, blue 0.392157, alpha 1.000000
+log: gl64: call fnId=200
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+log: 0024:trace:opengl:glCreateProgram 
+log: gl64: call fnId=416
+log: 0024:trace:opengl:glAttachShader program 10, shader 7
+log: gl64: call fnId=417
+log: 0024:trace:opengl:glAttachShader program 10, shader 6
+log: gl64: call fnId=417
+log: 0024:trace:opengl:glLinkProgram program 10
+log: gl64: call fnId=420
+log: 0024:trace:opengl:glGetProgramiv program 10, pname 35714, params 0031F2C4
+log: gl64: call fnId=421
+log: 0024:trace:opengl:glGetAttribLocation program 10, name 00ED2140
+log: gl64: call fnId=426
+log: 0024:trace:opengl:glGetAttribLocation program 10, name 00ED2160
+log: gl64: call fnId=426
+log: 0024:trace:opengl:glGetAttribLocation program 10, name 00ED2180
+log: gl64: call fnId=426
+log: 0024:trace:opengl:glUseProgram program 10
+log: gl64: call fnId=423
+log: 0024:trace:opengl:glGetUniformLocation program 10, name 00ED2000
+log: gl64: call fnId=425
+log: 0024:trace:opengl:glUniform1i location 6, v0 0
+log: gl64: call fnId=440
+log: 0024:trace:opengl:glUseProgram program 0
+log: gl64: call fnId=423
+log: 0024:trace:opengl:glGetUniformLocation program 10, name 77D4634A
+log: gl64: call fnId=425
+log: 0024:trace:opengl:glGetUniformLocation program 10, name 77D4635B
+log: gl64: call fnId=425
+log: 0024:trace:opengl:glGetUniformLocation program 10, name 77D4636D
+log: gl64: call fnId=425
+log: 0024:trace:opengl:glGetUniformLocation program 10, name 77D4637E
+log: gl64: call fnId=425
+log: 0024:trace:opengl:glGetUniformLocation program 10, name 77D4638F
+log: gl64: call fnId=425
+log: bw64: METRICS {"v":1,"uptimeMs":1794217488254,"winMs":516.4,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":0,"count":0,"fps":null,"frameMs":null,"path":"none"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":18,"ms":267.38},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: 0024:trace:opengl:glGetUniformLocation program 10, name 77D463A1
+log: gl64: call fnId=425
+log: 0024:trace:opengl:glGetUniformLocation program 10, name 77D463B2
+log: gl64: call fnId=425
+log: 0024:trace:opengl:glGetUniformLocation program 10, name 77D463BB
+log: gl64: call fnId=425
+log: 0024:trace:opengl:glUseProgram program 10
+log: gl64: call fnId=423
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glEnable cap 3042
+log: gl64: call fnId=204
+log: 0024:trace:opengl:glBlendColor red 1.000000, green 1.000000, blue 1.000000, alpha 1.000000
+log: gl64: call fnId=534
+log: 0024:trace:opengl:glBlendFuncSeparate sfactorRGB 1, dfactorRGB 771, sfactorAlpha 1, dfactorAlpha 771
+log: gl64: call fnId=531
+log: 0024:trace:opengl:glEnable cap 2884
+log: gl64: call fnId=204
+log: 0024:trace:opengl:glFrontFace mode 2304
+log: gl64: call fnId=209
+log: 0024:trace:opengl:glTexParameteri target 3553, pname 10242, param 33071
+log: gl64: call fnId=564
+log: 0024:trace:opengl:glTexParameteri target 3553, pname 10243, param 33071
+log: gl64: call fnId=564
+log: 0024:trace:opengl:glTexParameteri target 3553, pname 32882, param 33071
+log: gl64: call fnId=564
+log: 0024:trace:opengl:glVertexAttribPointer index 2, size 3, type 5126, normalized 0, stride 24, pointer 00000000
+log: gl64: call fnId=492
+log: 0024:trace:opengl:glVertexAttribPointer index 0, size 4, type 5121, normalized 1, stride 24, pointer 0000000C
+log: gl64: call fnId=492
+log: 0024:trace:opengl:glVertexAttribPointer index 1, size 2, type 5126, normalized 0, stride 24, pointer 00000010
+log: gl64: call fnId=492
+log: 0024:trace:opengl:glEnableVertexAttribArray index 0
+log: gl64: call fnId=490
+log: 0024:trace:opengl:glEnableVertexAttribArray index 1
+log: gl64: call fnId=490
+log: bw64: METRICS {"v":1,"uptimeMs":1794217488754,"winMs":500.1,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":0,"count":0,"fps":null,"frameMs":null,"path":"none"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":19,"ms":277.25},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: 0024:trace:opengl:glEnableVertexAttribArray index 2
+log: gl64: call fnId=490
+log: 0024:trace:opengl:glUniform4fv location 1, count 4, value 00F4DF48
+log: gl64: call fnId=448
+log: 0024:trace:opengl:glUniform1f location 5, v0 1.000000
+log: gl64: call fnId=441
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: gl64 glDrawRangeElementsBaseVertex is unsupported by the active GL backend (GL_INVALID_OPERATION)
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=16.5s drew=0
+log: Showing Window
+log: XWire SDL: host screen sized to 640x480 (BoxedWine screen)
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+error: WARNING: using emscripten GL immediate mode emulation. This is very limited in what it supports
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=16.8s drew=0
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=16.8s drew=0
+log: bw64: METRICS {"v":1,"uptimeMs":1794217489257,"winMs":502.9,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":2,"count":2,"fps":4.0,"frameMs":251.46,"path":"sdl"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":15,"ms":432.67},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=16.9s drew=0
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: 0024:warn:debugstr:OutputDebugStringA "fna-runtime: READY\n"
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=17.0s drew=0
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=17.1s drew=0
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=17.2s drew=0
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=17.3s drew=0
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=17.3s drew=0
+log: 0024:trace:opengl:glClear mask 16384
+log: bw64: METRICS {"v":1,"uptimeMs":1794217489761,"winMs":504.0,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":6,"count":6,"fps":11.9,"frameMs":83.99,"path":"sdl"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":31,"ms":471.16},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: gl64: call fnId=201
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=17.4s drew=0
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=17.5s drew=0
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=17.6s drew=0
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=17.7s drew=0
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=17.8s drew=0
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=17.8s drew=0
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+log: bw64: METRICS {"v":1,"uptimeMs":1794217490272,"winMs":510.8,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":7,"count":7,"fps":13.7,"frameMs":72.97,"path":"sdl"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":30,"ms":456.49},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=17.9s drew=0
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=18.0s drew=0
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=18.3s drew=0
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: bw64: METRICS {"v":1,"uptimeMs":1794217490787,"winMs":515.5,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":3,"count":3,"fps":5.8,"frameMs":171.83,"path":"sdl"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":18,"ms":463.74},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14
+log: gl64 PHASE: swap t=18.4s drew=0
+log: 0024:trace:opengl:glClear mask 16384
+log: gl64: call fnId=201
+log: 0024:trace:opengl:glBufferData target 34962, size 196608, data 00000000, usage 35040
+log: gl64: call fnId=472
+log: 0024:trace:opengl:glBufferSubData target 34962, offset 0, size 96, data 03E08E40
+log: gl64: call fnId=473
+log: 0024:trace:opengl:glDrawRangeElementsBaseVertex mode 4, start 0, end 3, count 6, type 5123, indices 00000000, basevertex 0
+log: gl64: call fnId=786
+log: 0024:trace:wgl:glxdrv_wglSwapBuffers (0x46010048)
+log: gl64: call fnId=14

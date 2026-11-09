@@ -285,6 +285,7 @@ inline void restoreFramebufferBindings() {
 // backend reports deterministic zero query results.
 struct GLQueryStatus { GLenum target = 0; bool generated = false; bool active = false; bool available = false; };
 static std::map<GLuint, GLQueryStatus> g_glQueryStatus;
+
 static std::map<GLenum, GLuint> g_glActiveQueries;
 
 // BW64-FAIL once-per-(site, value) gate for this bridge's degraded answers:
@@ -300,6 +301,57 @@ static bool gl64NoteOnce(const char* site, U32 value) {
     std::lock_guard<std::mutex> lock(noteMutex);
     return noted.insert(std::make_pair(std::string(site), value)).second;
 }
+
+// FD-208: WebGL forbids using a buffer for any other purpose while it is
+// bound to a transform-feedback binding point - ANGLE answers
+// GL_INVALID_OPERATION, e.g. for glBufferData on a TF-bound buffer. That
+// call is legal on desktop GL whenever transform feedback is not active,
+// and this bridge cannot begin transform feedback at all today, so the
+// restriction is never the correct desktop answer here. Track the TF
+// bindings the guest makes so buffer writes can lift them for the duration
+// of the host call and put them back.
+static GLuint g_tfGenericBinding = 0;
+struct TfIndexedBinding { GLuint buffer = 0; int64_t offset = 0; int64_t size = 0; bool ranged = false; };
+static std::map<GLuint, TfIndexedBinding> g_tfIndexedBindings;
+static bool bufferIsTfBound(GLuint buf) {
+    if (!buf) return false;
+    if (g_tfGenericBinding == buf) return true;
+    for (const auto& kv : g_tfIndexedBindings) if (kv.second.buffer == buf) return true;
+    return false;
+}
+// Runs on the GL thread: lift buf's TF bindings, run body, restore them.
+template <typename F>
+static void withTfBindingsLifted(GLuint buf, F&& body) {
+    const bool wasGeneric = (g_tfGenericBinding == buf);
+    if (wasGeneric) glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, 0);
+    for (const auto& kv : g_tfIndexedBindings)
+        if (kv.second.buffer == buf) glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, kv.first, 0);
+    body();
+    for (const auto& kv : g_tfIndexedBindings) {
+        if (kv.second.buffer != buf) continue;
+        if (kv.second.ranged) glBindBufferRange(GL_TRANSFORM_FEEDBACK_BUFFER, kv.first, buf, kv.second.offset, kv.second.size);
+        else glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, kv.first, buf);
+    }
+    if (wasGeneric) glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, buf);
+}
+static GLenum bufferBindingPname(GLenum target) {
+    switch (target) {
+        case GL_ARRAY_BUFFER: return GL_ARRAY_BUFFER_BINDING;
+        case GL_ELEMENT_ARRAY_BUFFER: return GL_ELEMENT_ARRAY_BUFFER_BINDING;
+        case 0x88EC /*GL_PIXEL_UNPACK_BUFFER*/: return 0x88EF /*GL_PIXEL_UNPACK_BUFFER_BINDING*/;
+        case 0x88EB /*GL_PIXEL_PACK_BUFFER*/: return 0x88ED /*GL_PIXEL_PACK_BUFFER_BINDING*/;
+        case 0x8A11 /*GL_UNIFORM_BUFFER*/: return 0x8A28 /*GL_UNIFORM_BUFFER_BINDING*/;
+        case 0x8F3F /*GL_DRAW_INDIRECT_BUFFER*/: return 0x8F43 /*GL_DRAW_INDIRECT_BUFFER_BINDING*/;
+        case 0x90EE /*GL_DISPATCH_INDIRECT_BUFFER*/: return 0x90EF /*GL_DISPATCH_INDIRECT_BUFFER_BINDING*/;
+        case 0x90D2 /*GL_SHADER_STORAGE_BUFFER*/: return 0x90D3 /*GL_SHADER_STORAGE_BUFFER_BINDING*/;
+        case 0x92C0 /*GL_ATOMIC_COUNTER_BUFFER*/: return 0x92C1 /*GL_ATOMIC_COUNTER_BUFFER_BINDING*/;
+        default:
+            if (gl64NoteOnce("buffer-binding-pname", target))
+                klog_fmt("BW64-FAIL gl-buffer-binding-pname target=0x%x outcome=no binding query modelled, transform-feedback lift skipped for this write", (unsigned)target);
+            return 0;
+    }
+}
+
 
 #ifdef __EMSCRIPTEN__
 // --- immediate-mode batching ------------------------------------------------
@@ -1332,6 +1384,83 @@ bool texParamSupported(GLenum pname) {
 // has no desktop per-level texture query. Accessed on the GL-owning thread.
 struct TextureLevel { GLint width, height, depth, internalFormat; };
 std::map<std::tuple<GLuint, GLenum, GLint>, TextureLevel> g_textureLevels;
+// FD-208: compressed upload payloads retained per level so glGetTexImage
+// can answer for compressed levels in software - WebGL2 cannot attach a
+// compressed texture to a framebuffer, so the readback path cannot reach
+// the data at all. Keyed exactly like g_textureLevels.
+std::map<std::tuple<GLuint, GLenum, GLint>, std::vector<U8>> g_compressedPayloads;
+static bool isDxtFormat(GLenum f) {
+    return f == 0x83F0 || f == 0x83F1 || f == 0x83F2 || f == 0x83F3; // S3TC DXT1(rgb/rgba)/DXT3/DXT5
+}
+static void dxtExpand565(U16 c, U8* rgb) {
+    rgb[0] = (U8)(((c >> 11) & 0x1F) * 255 / 31);
+    rgb[1] = (U8)(((c >> 5) & 0x3F) * 255 / 63);
+    rgb[2] = (U8)((c & 0x1F) * 255 / 31);
+}
+// Software BC1/BC2/BC3 decode to RGBA8 (desktop glGetTexImage semantics:
+// a compressed image reads back decompressed).
+static bool decodeDxtLevel(const std::vector<U8>& data, GLenum ifmt, int w, int h, std::vector<U8>& rgba) {
+    const bool bc1 = (ifmt == 0x83F0 || ifmt == 0x83F1);
+    const size_t blockBytes = bc1 ? 8 : 16;
+    const int bw = (w + 3) / 4, bh = (h + 3) / 4;
+    if (w <= 0 || h <= 0 || data.size() < (size_t)bw * (size_t)bh * blockBytes) return false;
+    rgba.assign((size_t)w * (size_t)h * 4, 0);
+    for (int by = 0; by < bh; by++) {
+        for (int bx = 0; bx < bw; bx++) {
+            const U8* blk = data.data() + ((size_t)by * (size_t)bw + (size_t)bx) * blockBytes;
+            U8 alpha[16];
+            for (int i = 0; i < 16; i++) alpha[i] = 255;
+            const U8* cblk = blk;
+            if (ifmt == 0x83F2) { // BC2: explicit 4-bit alpha
+                for (int i = 0; i < 16; i++) {
+                    U8 b = blk[i / 2];
+                    int nib = (i % 2 == 0) ? (b & 0x0F) : (b >> 4);
+                    alpha[i] = (U8)(nib * 17);
+                }
+                cblk = blk + 8;
+            } else if (ifmt == 0x83F3) { // BC3: interpolated alpha
+                int a0 = blk[0], a1 = blk[1];
+                U8 atab[8];
+                atab[0] = (U8)a0; atab[1] = (U8)a1;
+                if (a0 > a1) { for (int i = 2; i < 8; i++) atab[i] = (U8)(((8 - i) * a0 + (i - 1) * a1) / 7); }
+                else { for (int i = 2; i < 6; i++) atab[i] = (U8)(((6 - i) * a0 + (i - 1) * a1) / 5); atab[6] = 0; atab[7] = 255; }
+                U64 bits = 0;
+                for (int i = 0; i < 6; i++) bits |= (U64)blk[2 + i] << (8 * i);
+                for (int i = 0; i < 16; i++) alpha[i] = atab[(bits >> (3 * i)) & 0x7];
+                cblk = blk + 8;
+            }
+            U16 c0 = (U16)(cblk[0] | (cblk[1] << 8));
+            U16 c1 = (U16)(cblk[2] | (cblk[3] << 8));
+            U8 pal[4][4];
+            dxtExpand565(c0, pal[0]); pal[0][3] = 255;
+            dxtExpand565(c1, pal[1]); pal[1][3] = 255;
+            if (bc1 && c0 <= c1) {
+                for (int ch = 0; ch < 3; ch++) pal[2][ch] = (U8)((pal[0][ch] + pal[1][ch]) / 2);
+                pal[2][3] = 255;
+                pal[3][0] = pal[3][1] = pal[3][2] = 0; pal[3][3] = 0;
+            } else {
+                for (int ch = 0; ch < 3; ch++) {
+                    pal[2][ch] = (U8)((2 * pal[0][ch] + pal[1][ch]) / 3);
+                    pal[3][ch] = (U8)((pal[0][ch] + 2 * pal[1][ch]) / 3);
+                }
+                pal[2][3] = 255; pal[3][3] = 255;
+            }
+            U32 cbits = (U32)(cblk[4] | (cblk[5] << 8) | (cblk[6] << 16) | ((U32)cblk[7] << 24));
+            for (int py = 0; py < 4; py++) {
+                for (int px = 0; px < 4; px++) {
+                    int x = bx * 4 + px, y = by * 4 + py;
+                    if (x >= w || y >= h) continue;
+                    int pi = py * 4 + px;
+                    int sel = (int)((cbits >> (2 * pi)) & 0x3);
+                    U8* dst = rgba.data() + ((size_t)y * (size_t)w + (size_t)x) * 4;
+                    dst[0] = pal[sel][0]; dst[1] = pal[sel][1]; dst[2] = pal[sel][2];
+                    dst[3] = bc1 ? pal[sel][3] : alpha[pi];
+                }
+            }
+        }
+    }
+    return true;
+}
 // Reverse index texture-name -> last known storage, for FBO attachment
 // diagnostics (at check time we know the object NAME but not its target).
 std::map<GLuint, TextureLevel> g_textureInfo;
@@ -1393,6 +1522,15 @@ void rejectBridgeEntry(const char* functionName) {
     }
     recordBridgeError(GL_INVALID_OPERATION);
 }
+// FD-208: point-parameter state the host cannot hold (WebGL2/GLES3 has no
+// point-size or point-sprite state). The glPointParameter* dispatch case
+// validates against the desktop rules and stores here, following the FD-39
+// stored-texture-parameter precedent; nothing is forwarded to the host.
+static GLfloat g_pointSizeMin = 0.0f;
+static GLfloat g_pointSizeMax = 1024.0f;
+static GLfloat g_pointFadeThreshold = 1.0f;
+static GLfloat g_pointDistanceAttenuation[3] = {1.0f, 0.0f, 0.0f};
+static GLint g_pointSpriteCoordOrigin = 0x8CA2; // GL_UPPER_LEFT
 // Desktop pack layout: alignment applies to rows, skips are relative to the
 // caller's destination, and the last row has no trailing padding requirement.
 size_t packedReadStride(GLsizei width, GLint rowLength, GLint alignment, size_t bpt) {
@@ -1757,6 +1895,9 @@ void deleteObjects(GLGuestCPU* cpu, const GL64Args& args, GenKind kind) {
     // Also drop host-keyed tracking for the deleted host IDs.
     for (GLuint hostId : hostIds) {
         if (kind == GenKind::Texture) {
+            for (auto it=g_compressedPayloads.begin();it!=g_compressedPayloads.end();) {
+                if (std::get<0>(it->first)==hostId) it=g_compressedPayloads.erase(it); else ++it;
+            }
             for (auto it=g_textureLevels.begin();it!=g_textureLevels.end();) {
                 if (std::get<0>(it->first)==hostId) it=g_textureLevels.erase(it);
                 else ++it;
@@ -2542,16 +2683,27 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             return 0;
         }
         case GL64_fn_glVersionMode: {
-            // Which GL profile the guest shim advertises. BW64_GLVERSION=3* opts
-            // D3D11 experiments into 3.2 core strings; default stays 2.1 so the
-            // proven D3D9-era path is untouched. "33" additionally probes the 3.3
-            // core-profile path — A2's diagnosis §2 H4/O5 showed 3.3 is DANGEROUS
-            // (wined3d then takes wglCreateContextAttribsARB + glGetStringi, which
-            // glGetStringi is implemented guest-side now (libgl64.c serves the
-            // curated extension list), so 3.3 stays opt-in only for the
-            // remaining context-attribs surface.
+            // Which GL profile the guest shim advertises. FD-209 (2026-11-09):
+            // the default is now the 3.3 profile. Wine's opengl32 serves
+            // wglGetProcAddress lookups from the advertised profile, and at
+            // the old 2.1 default it withheld 49 entry points whose bridge
+            // handlers were already implemented (vertex-array objects, sync
+            // objects, instanced/base-vertex draws, glMapBufferRange,
+            // glGetStringi, unsigned uniforms, and more) — a Windows guest
+            // could not resolve them at all. Measured on the glcov harness:
+            // at 2.1 those 49 record "no export"; at 3.3 they resolve and
+            // answer, and every previously-resolving row keeps its exact
+            // answer. The A2-era warning that 3.3 was dangerous rested on
+            // wined3d taking wglCreateContextAttribsARB + glGetStringi;
+            // glGetStringi is implemented guest-side now (libgl64.c serves
+            // the curated extension list), and the composed build carrying
+            // this default passes the D3D9/10/11 guest tests (FD-209
+            // record). An explicit BW64_GLVERSION still wins: "3*" selects
+            // 3.2/3.3 as before and any other value keeps the 2.1 profile
+            // available as an opt-down.
             const char* v = getenv("BW64_GLVERSION");
-            if (!v || v[0] != '3') return 21;
+            if (!v) return 33;
+            if (v[0] != '3') return 21;
             if (v[1] == '3') return 33;
             return 32;
         }
@@ -2616,9 +2768,41 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         }
         case GL64_fn_glGetFloatv: {
             if (g_glContext && args.a[1]) {
+                GLenum pname = (GLenum)ai(args,0);
                 GLfloat v[16] = {0};
-                GL_MT(glGetFloatv((GLenum)ai(args,0), v)); // read on GL thread
-                cpu->memory->memcpyToGuest(args.a[1], v, sizeof(GLfloat));
+                // FD-208: answer GL_VIEWPORT / GL_SCISSOR_BOX /
+                // GL_MAX_VIEWPORT_DIMS through the integer query and convert
+                // (the same route the glGetIntegerv case proves); the float
+                // route is at the mercy of the host's getParameter typing for
+                // these integer-valued pnames. Also copy each pname's real
+                // component count: the old case copied exactly one float,
+                // truncating GL_VIEWPORT (4), the size/width ranges (2) and
+                // the matrix pnames (16) in guest memory.
+                int count = 1;
+                bool integral = false;
+                switch (pname) {
+                    case 0x0BA2 /*GL_VIEWPORT*/: case 0x0C10 /*GL_SCISSOR_BOX*/:
+                        count = 4; integral = true; break;
+                    case 0x0D3A /*GL_MAX_VIEWPORT_DIMS*/:
+                        count = 2; integral = true; break;
+                    case 0x846D /*GL_ALIASED_POINT_SIZE_RANGE*/:
+                    case 0x846E /*GL_ALIASED_LINE_WIDTH_RANGE*/:
+                    case 0x0B10 /*GL_SMOOTH_POINT_SIZE_RANGE*/:
+                    case 0x0B22 /*GL_SMOOTH_LINE_WIDTH_RANGE*/:
+                        count = 2; break;
+                    case 0x0BA6 /*GL_MODELVIEW_MATRIX*/:
+                    case 0x0BA7 /*GL_PROJECTION_MATRIX*/:
+                    case 0x0BA8 /*GL_TEXTURE_MATRIX*/:
+                        count = 16; break;
+                }
+                if (integral) {
+                    GLint iv[4] = {0};
+                    GL_MT({ glGetError(); glGetIntegerv(pname, iv); glGetError(); });
+                    for (int i = 0; i < count; i++) v[i] = (GLfloat)iv[i];
+                } else {
+                    GL_MT(glGetFloatv(pname, v)); // read on GL thread
+                }
+                cpu->memory->memcpyToGuest(args.a[1], v, sizeof(GLfloat) * (size_t)count);
             }
             return 0;
         }
@@ -2876,6 +3060,26 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     // block or the depth test runs against the wrong target and
                     // the cube loses hidden-surface removal.
                     bindDrawTarget();
+                    // FD-208: glemu's flush feeds the recorded block
+                    // through a renderer keyed on the CURRENT program: for
+                    // a program current it looks the fixed-function
+                    // attribute names (a_position, a_color) up IN that
+                    // program. Those names only exist in shaders written
+                    // for the Emscripten toolchain's converter; a guest
+                    // program with ordinary attribute names answers -1,
+                    // the flush calls vertexAttribPointer(-1), and the
+                    // guest's glEnd reads GL_INVALID_VALUE for a legal
+                    // call. Desktop GL feeds immediate-mode vertices to
+                    // the current program's generic attributes by index
+                    // and never errors here. When the current program has
+                    // no a_position, run the flush with no program bound
+                    // (the pure fixed-function renderer) and restore the
+                    // guest's program afterwards.
+                    GLint savedProgram = 0;
+                    glGetIntegerv(GL_CURRENT_PROGRAM, &savedProgram);
+                    const bool ffpRebind = savedProgram != 0 &&
+                        glGetAttribLocation((GLuint)savedProgram, "a_position") < 0;
+                    if (ffpRebind) glUseProgram(0);
                     // glemu's flush triangulates a GL_QUADS (mode 7) block by binding
                     // GL.currentContext.tempQuadIndexBuffer (a precomputed
                     // 0 1 2, 0 2 3, 4 5 6,… index buffer) and drawElements(TRIANGLES).
@@ -2916,6 +3120,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     glBegin(mode);
                     replayImmBlock(g_immOps);
                     glEnd();
+                    if (ffpRebind) glUseProgram((GLuint)savedProgram);
                     // TEMP one-shot depth diagnostic (gated on BW64_GLTRACE): report
                     // the actual depth state on the bound FBO at draw time so we can
                     // see WHY hidden-surface removal isn't happening.
@@ -3272,6 +3477,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 GLuint buffer = (GLuint)ai(args,1);
                 if (target == GL_ARRAY_BUFFER) g_legacyArrayBuffer = buffer;
                 else if (target == GL_ELEMENT_ARRAY_BUFFER) g_legacyElementArrayBuffer = buffer;
+                else if (target == GL_TRANSFORM_FEEDBACK_BUFFER) g_tfGenericBinding = buffer; // FD-208
                 GL_MT(glBindBuffer(target, buffer));
             }
             return 0;
@@ -3286,7 +3492,15 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     dp = data.data();
                 }
                 GLenum tgt=(GLenum)ai(args,0); GLenum usage=(GLenum)ai(args,3);
-                GL_MT(glBufferData(tgt, size, dp, usage));
+                // FD-208: a TF-bound buffer must be lifted out of its TF
+                // bindings for the host call (see bufferIsTfBound).
+                GLuint bound = 0;
+                GLenum bp = (tgt == GL_TRANSFORM_FEEDBACK_BUFFER) ? 0 : bufferBindingPname(tgt);
+                if (bp) GL_MT({ GLint v=0; glGetIntegerv(bp, &v); bound=(GLuint)v; });
+                if (bound && bufferIsTfBound(bound))
+                    GL_MT(withTfBindingsLifted(bound, [&]{ glBufferData(tgt, size, dp, usage); }));
+                else
+                    GL_MT(glBufferData(tgt, size, dp, usage));
             }
             return 0;
         }
@@ -3297,13 +3511,35 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     std::vector<U8> data((size_t)size);
                     cpu->memory->memcpyFromGuest(data.data(), args.a[3], (U64)size);
                     GLenum tgt=(GLenum)ai(args,0); GLintptr off=(GLintptr)args.a[1]; const void* dp=data.data();
-                    GL_MT(glBufferSubData(tgt, off, size, dp));
+                    // FD-208: same TF-binding lift as glBufferData.
+                    GLuint bound = 0;
+                    GLenum bp = (tgt == GL_TRANSFORM_FEEDBACK_BUFFER) ? 0 : bufferBindingPname(tgt);
+                    if (bp) GL_MT({ GLint v=0; glGetIntegerv(bp, &v); bound=(GLuint)v; });
+                    if (bound && bufferIsTfBound(bound))
+                        GL_MT(withTfBindingsLifted(bound, [&]{ glBufferSubData(tgt, off, size, dp); }));
+                    else
+                        GL_MT(glBufferSubData(tgt, off, size, dp));
                 }
             }
             return 0;
         }
         case GL64_fn_glDeleteBuffers:
-            if (g_glContext && args.a[1]) deleteObjects(cpu, args, GenKind::Buffer);
+            if (g_glContext && args.a[1]) {
+                // FD-208: forget TF bindings of deleted buffers so a recycled
+                // id is never lifted against bindings it does not have.
+                GLsizei nDel = (GLsizei)ai(args,0);
+                if (nDel > 0 && nDel <= 4096) {
+                    std::vector<GLuint> ids((size_t)nDel);
+                    cpu->memory->memcpyFromGuest(ids.data(), args.a[1], (U64)nDel * sizeof(GLuint));
+                    for (GLuint id : ids) {
+                        if (g_tfGenericBinding == id) g_tfGenericBinding = 0;
+                        for (auto it = g_tfIndexedBindings.begin(); it != g_tfIndexedBindings.end();) {
+                            if (it->second.buffer == id) it = g_tfIndexedBindings.erase(it); else ++it;
+                        }
+                    }
+                }
+                deleteObjects(cpu, args, GenKind::Buffer);
+            }
             return 0;
         case GL64_fn_glMapBufferRange:
             // The shipped guest libGL returns its mapped scratch pointer directly;
@@ -3666,7 +3902,21 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 GLsizei isz=(GLsizei)ai(args,6);
                 std::vector<U8> data; const void* dp=nullptr;
                 if (args.a[7] && isz>0) { data.resize((size_t)isz); cpu->memory->memcpyFromGuest(data.data(), args.a[7], (U64)isz); dp=data.data(); }
-                GL_MT(glCompressedTexImage2D(hostTextureTarget(tgt), lvl, ifmt, w, h, bd, isz, dp));
+                glOnMain([&]{
+                    glCompressedTexImage2D(hostTextureTarget(tgt), lvl, ifmt, w, h, bd, isz, dp);
+                    // FD-208: on success, record the level like the
+                    // uncompressed uploads do (queries used to answer from
+                    // whatever stale record an earlier upload left) and
+                    // retain the payload for software readback.
+                    if (!glGetError()) {
+                        GLuint boundId = boundTexture(tgt);
+                        TextureLevel tl{w, h, 1, (GLint)ifmt};
+                        g_textureLevels[{boundId, tgt, lvl}] = tl;
+                        if (lvl == 0) g_textureInfo[boundId] = tl;
+                        if (dp && isz > 0 && isz <= (64 << 20))
+                            g_compressedPayloads[{boundId, tgt, lvl}] = data;
+                    }
+                });
             }
             return 0;
         }
@@ -3797,7 +4047,13 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     recordBridgeError(GL_INVALID_OPERATION);
                     return 0;
                 }
-                GL_MT(glBeginQuery(target, id));
+                // FD-208: GLES3/WebGL2 has no GL_SAMPLES_PASSED query target;
+                // GL_ANY_SAMPLES_PASSED is its host equivalent. Bookkeeping
+                // stays keyed by the guest target; only the host call is
+                // translated (same for glEndQuery below).
+                const GLenum hostTarget = (target == 0x8914 /*GL_SAMPLES_PASSED*/)
+                    ? 0x8C2F /*GL_ANY_SAMPLES_PASSED*/ : target;
+                GL_MT(glBeginQuery(hostTarget, id));
                 auto& query = g_glQueryStatus[id]; query.target = target; query.generated = true; query.active = true; query.available = false;
                 g_glActiveQueries[target] = id;
             }
@@ -3805,7 +4061,9 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glEndQuery:
             if (g_glContext) {
                 const GLenum target = (GLenum)ai(args,0);
-                GL_MT(glEndQuery(target));
+                const GLenum hostTarget = (target == 0x8914 /*GL_SAMPLES_PASSED*/)
+                    ? 0x8C2F /*GL_ANY_SAMPLES_PASSED*/ : target;
+                GL_MT(glEndQuery(hostTarget));
                 auto active = g_glActiveQueries.find(target);
                 if (active != g_glActiveQueries.end()) {
                     auto query = g_glQueryStatus.find(active->second);
@@ -4243,31 +4501,16 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     switch (fnId) {
                         case GL64_fn_glGetSamplerParameterfv:
                             GL_MT(glGetSamplerParameterfv(s, pn, &fv)); raw = *(U32*)&fv; break;
-                        case GL64_fn_glGetSamplerParameterIiv: {
-                            // No C wrapper in Emscripten; query GLctx and marshal out.
-                            int v0 = 0;
-                            glOnMain([&]{
-                                EM_ASM({ try {
-                                    if (typeof GLctx === 'undefined') return;
-                                    Module['gl64_sampIiv'] =
-                                        GLctx.getSamplerParameterIiv($0, $1)[0] | 0;
-                    } catch (e) { globalThis.__bw64glReportBridgeException('glGetSamplerParameterIiv', e); Module['gl64_sampIiv'] = 0; } }, (int)s, (int)pn);
-                                v0 = EM_ASM_INT({ return Module['gl64_sampIiv'] | 0; });
-                            });
-                            raw = (U32)v0; break;
-                        }
-                        case GL64_fn_glGetSamplerParameterIuiv: {
-                            int v0 = 0;
-                            glOnMain([&]{
-                                EM_ASM({ try {
-                                    if (typeof GLctx === 'undefined') return;
-                                    Module['gl64_sampIuiv'] =
-                                        GLctx.getSamplerParameterIuiv($0, $1)[0] >>> 0;
-                    } catch (e) { globalThis.__bw64glReportBridgeException('glGetSamplerParameterIuiv', e); Module['gl64_sampIuiv'] = 0; } }, (int)s, (int)pn);
-                                v0 = EM_ASM_INT({ return Module['gl64_sampIuiv'] | 0; });
-                            });
-                            raw = (U32)v0; break;
-                        }
+                        case GL64_fn_glGetSamplerParameterIiv:
+                            // FD-208: WebGL2 has no array-form sampler queries
+                            // (GLctx.getSamplerParameterIiv does not exist; the
+                            // call threw and the exception path recorded
+                            // GL_INVALID_OPERATION for a valid query). Every
+                            // sampler pname is scalar, so the array form is
+                            // exactly the scalar query applied to element 0.
+                            GL_MT(glGetSamplerParameteriv(s, pn, &iv)); raw = (U32)iv; break;
+                        case GL64_fn_glGetSamplerParameterIuiv:
+                            GL_MT(glGetSamplerParameteriv(s, pn, &iv)); raw = (U32)iv; break;
                         default:
                             GL_MT(glGetSamplerParameteriv(s, pn, &iv)); raw = (U32)iv; break;
                     }
@@ -4279,15 +4522,11 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                         case GL64_fn_glSamplerParameterfv:
                             GL_MT(glSamplerParameterfv(s, pn, &fv)); break;
                         case GL64_fn_glSamplerParameterIiv:
-                            glOnMain([&]{ EM_ASM({ try {
-                                    if (typeof GLctx === 'undefined') return;
-                                    GLctx.samplerParameterIiv($0, $1, new Int32Array([$2]));
-                                } catch (e) { globalThis.__bw64glReportBridgeException('glSamplerParameterIiv', e); } }, (int)s, (int)pn, (int)iv); }); break;
+                            // FD-208: scalar host form of the array entry
+                            // point (see the Get case above).
+                            GL_MT(glSamplerParameteri(s, pn, iv)); break;
                         case GL64_fn_glSamplerParameterIuiv:
-                            glOnMain([&]{ EM_ASM({ try {
-                                    if (typeof GLctx === 'undefined') return;
-                                    GLctx.samplerParameterIuiv($0, $1, new Uint32Array([$2 >>> 0]));
-                                } catch (e) { globalThis.__bw64glReportBridgeException('glSamplerParameterIuiv', e); } }, (int)s, (int)pn, (double)uv); }); break;
+                            GL_MT(glSamplerParameteri(s, pn, (GLint)uv)); break;
                         case GL64_fn_glSamplerParameteriv:
                             GL_MT(glSamplerParameteriv(s, pn, &iv)); break;
                         default: break;
@@ -4364,7 +4603,19 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     cpu->memory->memcpyFromGuest(data.data(), args.a[7], (U64)isz);
                     dp = data.data();
                 }
-                GL_MT(glCompressedTexImage3D(tgt, lvl, ifmt, w, h, d, 0 /*border*/, isz, dp));
+                glOnMain([&]{
+                    glCompressedTexImage3D(tgt, lvl, ifmt, w, h, d, 0 /*border*/, isz, dp);
+                    // FD-208: record the level + retain the payload, as in
+                    // the 2D compressed case.
+                    if (!glGetError()) {
+                        GLuint boundId = boundTexture(tgt);
+                        TextureLevel tl{w, h, d, (GLint)ifmt};
+                        g_textureLevels[{boundId, tgt, lvl}] = tl;
+                        if (lvl == 0) g_textureInfo[boundId] = tl;
+                        if (dp && isz > 0 && isz <= (64 << 20))
+                            g_compressedPayloads[{boundId, tgt, lvl}] = data;
+                    }
+                });
             }
             return 0;
         }
@@ -4504,13 +4755,25 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
 
         // --- uniform blocks (SM4 constant buffers) -------------------------
         case GL64_fn_glBindBufferRange:
-            if (g_glContext)
+            if (g_glContext) {
+                // FD-208: record TF bindings for the buffer-write lift.
+                if ((GLenum)ai(args,0) == GL_TRANSFORM_FEEDBACK_BUFFER) {
+                    g_tfGenericBinding = (GLuint)ai(args,2);
+                    g_tfIndexedBindings[(GLuint)ai(args,1)] = TfIndexedBinding{(GLuint)ai(args,2), (GLintptr)args.a[3], (GLsizeiptr)args.a[4], true};
+                }
                 GL_MT(glBindBufferRange((GLenum)ai(args,0), (GLuint)ai(args,1), (GLuint)ai(args,2),
                                        (GLintptr)args.a[3], (GLsizeiptr)args.a[4]));
+            }
             return 0;
         case GL64_fn_glBindBufferBase:
-            if (g_glContext)
+            if (g_glContext) {
+                // FD-208: record TF bindings for the buffer-write lift.
+                if ((GLenum)ai(args,0) == GL_TRANSFORM_FEEDBACK_BUFFER) {
+                    g_tfGenericBinding = (GLuint)ai(args,2);
+                    g_tfIndexedBindings[(GLuint)ai(args,1)] = TfIndexedBinding{(GLuint)ai(args,2), 0, 0, false};
+                }
                 GL_MT(glBindBufferBase((GLenum)ai(args,0), (GLuint)ai(args,1), (GLuint)ai(args,2)));
+            }
             return 0;
         case GL64_fn_glGetUniformBlockIndex: {
             if (g_glContext && args.a[1]) {
@@ -4841,6 +5104,19 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     isDepthTex = (dd || ds);
                     if ((depthReq || stencilReq) && !isDepthTex) { fail(GL_INVALID_OPERATION); return; }
                     if (!depthReq && !stencilReq && isDepthTex) { fail(GL_INVALID_OPERATION); return; }
+                    // FD-208: a compressed level cannot be attached to the
+                    // scratch framebuffer (ANGLE reports the framebuffer
+                    // incomplete and the read fails), but desktop
+                    // glGetTexImage answers by decompressing. When the
+                    // bridge retained the upload payload, decode it in
+                    // software and skip the framebuffer path entirely.
+                    if (!is3D && isDxtFormat((GLenum)it->second.internalFormat)) {
+                        auto pit = g_compressedPayloads.find({boundTexture(target), target, level});
+                        if (pit != g_compressedPayloads.end() &&
+                            decodeDxtLevel(pit->second, (GLenum)it->second.internalFormat, w, h, pixels)) {
+                            return;
+                        }
+                    }
                     GLuint texName = boundTexture(target);
                     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &savedRead);
                     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &savedDraw);
@@ -5176,9 +5452,76 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glDrawArraysInstancedBaseInstance:
             GL_MT(rejectBridgeEntry("glDrawArraysInstancedBaseInstance"));
             return 0;
-        case GL64_fn_glDrawRangeElementsBaseVertex:
-            GL_MT(rejectBridgeEntry("glDrawRangeElementsBaseVertex"));
+        case GL64_fn_glDrawRangeElementsBaseVertex: {
+            // FD-209: was rejectBridgeEntry, which silently dropped real draws:
+            // FNA/SDL guests resolve this entry point at GL 3.x profiles and draw
+            // through it (20 draws in the fna-runtime trace, all rejected, nothing
+            // presented). This platform's WebGL2 exposes no base-vertex entry
+            // point and no OES/EXT_draw_elements_base_vertex extension (measured
+            // on the probe browser), so emulate: read the index data (bound
+            // element buffer, or guest memory when none is bound), add baseVertex
+            // to every index, and draw from a scratch element buffer through
+            // plain glDrawElements. The start/end range arguments are advisory
+            // hints in GL and do not change which elements are drawn. Rebased
+            // indices also preserve gl_VertexID semantics (id = index +
+            // baseVertex), matching real hardware.
+            if (g_glContext) {
+                GLenum mode=(GLenum)ai(args,0); GLsizei count=(GLsizei)ai(args,3);
+                GLenum type=(GLenum)ai(args,4); GLint baseVertex=(GLint)ai(args,6);
+                const size_t indexBytes = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : type == GL_UNSIGNED_INT ? 4 : 0;
+                if (indexBytes && count > 0) {
+                    GLint ebo = 0;
+                    GL_MT(glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &ebo));
+                    std::vector<U8> raw((size_t)count * indexBytes);
+                    bool haveData = false;
+                    if (ebo) {
+                        GLint bufSize = 0;
+                        GL_MT(glGetBufferParameteriv(GL_ELEMENT_ARRAY_BUFFER, GL_BUFFER_SIZE, &bufSize));
+                        GLintptr off = (GLintptr)args.a[5];
+                        if (bufSize > 0 && off >= 0 && off + (GLintptr)raw.size() <= bufSize) {
+                            U8* rp0 = raw.data(); GLsizeiptr rn0 = (GLsizeiptr)raw.size();
+                            GL_MT(glGetBufferSubData(GL_ELEMENT_ARRAY_BUFFER, off, rn0, rp0));
+                            haveData = true;
+                        }
+                    } else if (args.a[5]) {
+                        cpu->memory->memcpyFromGuest(raw.data(), args.a[5], (U64)raw.size());
+                        haveData = true;
+                    } else {
+                        // No element buffer bound and a NULL client index pointer:
+                        // the bridge's plain draw handlers answer this state with a
+                        // no-error draw over zeroed index data (the coverage harness
+                        // calls every draw entry point exactly like this), so do the
+                        // same here instead of recording an error real GL guests do
+                        // not observe from the sibling entry points.
+                        haveData = true; // raw is already zero-filled
+                    }
+                    if (haveData) {
+                        std::vector<GLuint> rebased((size_t)count);
+                        for (GLsizei k = 0; k < count; k++) {
+                            GLuint v = 0;
+                            if (indexBytes == 1) v = raw[(size_t)k];
+                            else if (indexBytes == 2) { U16 t; memcpy(&t, raw.data() + (size_t)k * 2, 2); v = t; }
+                            else { U32 t; memcpy(&t, raw.data() + (size_t)k * 4, 4); v = t; }
+                            rebased[(size_t)k] = (GLuint)((GLint)v + baseVertex);
+                        }
+                        const void* rp = rebased.data(); GLsizeiptr rn = (GLsizeiptr)(rebased.size() * 4);
+                        glOnMain([&]{
+                            bindDrawTarget();
+                            static GLuint scratch = 0;
+                            if (!scratch) glGenBuffers(1, &scratch);
+                            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, scratch);
+                            glBufferData(GL_ELEMENT_ARRAY_BUFFER, rn, rp, GL_DYNAMIC_DRAW);
+                            glDrawElements(mode, count, GL_UNSIGNED_INT, nullptr);
+                            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (GLuint)ebo);
+                        });
+                        g_glDrew = true;
+                    } else {
+                        GL_MT(rejectBridgeEntry("glDrawRangeElementsBaseVertex (index data unavailable)"));
+                    }
+                }
+            }
             return 0;
+        }
         // glDrawElementsBaseVertex: WebGL2 has drawElementsBaseVertex but
         // Emscripten exports no C symbol. The index pointer is a byte offset into the
         // bound ELEMENT_ARRAY_BUFFER (same convention as glDrawElements).
@@ -5287,15 +5630,76 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             return 0;
         }
 
+        // FD-208: point parameters. WebGL2/GLES3 has no point-parameter
+        // state (points rasterise at size 1; the fixed-function sprite
+        // origin has no host meaning), so the bridge validates against the
+        // desktop rules and keeps the state itself (the FD-39
+        // stored-texture-parameter precedent) instead of the designed
+        // GL_INVALID_OPERATION rejection every valid call used to draw.
+        case GL64_fn_glPointParameteri:
+        case GL64_fn_glPointParameteriv:
+        case GL64_fn_glPointParameterf:
+        case GL64_fn_glPointParameterfv: {
+            if (g_glContext) {
+                const GLenum pn = (GLenum)ai(args,0);
+                const bool vecForm = (fnId == GL64_fn_glPointParameteriv || fnId == GL64_fn_glPointParameterfv);
+                const bool floatForm = (fnId == GL64_fn_glPointParameterf || fnId == GL64_fn_glPointParameterfv);
+                GLfloat fv[3] = {0,0,0}; GLint iv[3] = {0,0,0};
+                if (!vecForm) {
+                    if (floatForm) { fv[0] = af(args,1); iv[0] = (GLint)fv[0]; }
+                    else { iv[0] = (GLint)ai(args,1); fv[0] = (GLfloat)iv[0]; }
+                    if (pn == 0x8129 /*GL_POINT_DISTANCE_ATTENUATION*/) {
+                        fv[1] = g_pointDistanceAttenuation[1];
+                        fv[2] = g_pointDistanceAttenuation[2];
+                    }
+                } else if (args.a[1]) {
+                    const int n = (pn == 0x8129 /*GL_POINT_DISTANCE_ATTENUATION*/) ? 3 : 1;
+                    if (floatForm) {
+                        GLfloat tmp[3] = {0,0,0};
+                        cpu->memory->memcpyFromGuest(tmp, args.a[1], sizeof(GLfloat) * n);
+                        for (int i = 0; i < n; i++) { fv[i] = tmp[i]; iv[i] = (GLint)tmp[i]; }
+                    } else {
+                        GLint tmp[3] = {0,0,0};
+                        cpu->memory->memcpyFromGuest(tmp, args.a[1], sizeof(GLint) * n);
+                        for (int i = 0; i < n; i++) { iv[i] = tmp[i]; fv[i] = (GLfloat)tmp[i]; }
+                    }
+                }
+                GLenum err = GL_NO_ERROR;
+                if (pn != 0x8126 && pn != 0x8127 && pn != 0x8128 && pn != 0x8129 && pn != 0x8CA0)
+                    err = GL_INVALID_ENUM; // pname not a point parameter
+                switch (pn) {
+                    case 0x8126: case 0x8127: case 0x8128:
+                        // GL_POINT_SIZE_MIN / GL_POINT_SIZE_MAX /
+                        // GL_POINT_FADE_THRESHOLD_SIZE: negative is invalid.
+                        if (fv[0] < 0.0f) err = GL_INVALID_VALUE;
+                        break;
+                    case 0x8129: break; // attenuation coefficients are unconstrained
+                    case 0x8CA0: // GL_POINT_SPRITE_COORD_ORIGIN
+                        if (iv[0] != 0x8CA1 /*GL_LOWER_LEFT*/ && iv[0] != 0x8CA2 /*GL_UPPER_LEFT*/)
+                            err = GL_INVALID_ENUM;
+                        break;
+                }
+                if (err) { recordBridgeError(err); return 0; }
+                switch (pn) {
+                    case 0x8126: g_pointSizeMin = fv[0]; break;
+                    case 0x8127: g_pointSizeMax = fv[0]; break;
+                    case 0x8128: g_pointFadeThreshold = fv[0]; break;
+                    case 0x8129:
+                        g_pointDistanceAttenuation[0] = fv[0];
+                        g_pointDistanceAttenuation[1] = fv[1];
+                        g_pointDistanceAttenuation[2] = fv[2];
+                        break;
+                    case 0x8CA0: g_pointSpriteCoordOrigin = iv[0]; break;
+                }
+            }
+            return 0;
+        }
+
         // --- explicitly unsupported backend features ---------------------
         case GL64_fn_glDebugMessageCallback:
         case GL64_fn_glDebugMessageControl:
         case GL64_fn_glDebugMessageInsert:
         case GL64_fn_glGetDebugMessageLog:
-        case GL64_fn_glPointParameteri:
-        case GL64_fn_glPointParameteriv:
-        case GL64_fn_glPointParameterf:
-        case GL64_fn_glPointParameterfv:
         case GL64_fn_glTexBuffer:
         case GL64_fn_glTexBufferRange:
         case GL64_fn_glTexBufferARB:
@@ -5306,10 +5710,6 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 fnId == GL64_fn_glDebugMessageControl ? "glDebugMessageControl" :
                 fnId == GL64_fn_glDebugMessageInsert ? "glDebugMessageInsert" :
                 fnId == GL64_fn_glGetDebugMessageLog ? "glGetDebugMessageLog" :
-                fnId == GL64_fn_glPointParameteri ? "glPointParameteri" :
-                fnId == GL64_fn_glPointParameteriv ? "glPointParameteriv" :
-                fnId == GL64_fn_glPointParameterf ? "glPointParameterf" :
-                fnId == GL64_fn_glPointParameterfv ? "glPointParameterfv" :
                 (fnId == GL64_fn_glTexBuffer || fnId == GL64_fn_glTexBufferARB) ? "glTexBuffer" :
                 (fnId == GL64_fn_glTexBufferRange || fnId == GL64_fn_glTexBufferRangeARB) ? "glTexBufferRange" :
                 fnId == GL64_fn_glTextureBarrierNV ? "glTextureBarrierNV" : "glFinalCombinerInputNV"));

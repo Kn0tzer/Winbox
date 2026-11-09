@@ -12,10 +12,18 @@ export function dnsResponse(query, dns) {
   if (offset + 4 > query.length) throw Error('Incomplete DNS question');
   const host = labels.join('.'), type = (query[offset] << 8) | query[offset + 1], kind = (query[offset + 2] << 8) | query[offset + 3];
   if (!host || host.length > 253 || !/^[a-zA-Z0-9._-]+$/.test(host)) throw Error('Invalid DNS hostname');
-  const answer = type === 1 && kind === 1 ? dns.lookup_name(host).split('.').map(Number) : null;
+  // Names under the RFC 6761 special-use endings that can never resolve
+  // (.invalid, .test, .example) must be refused with NXDOMAIN, as a real
+  // resolver answers them. The synthetic map otherwise fabricates an
+  // address for any syntactically valid name, and a fabricated address
+  // for a name that cannot exist is a false success: the guest resolves
+  // it, connects to it (the stream open completes locally, before the
+  // relay's refusal arrives), and never learns the name was bad.
+  const nxdomain = /(^|\.)(invalid|test|example)$/i.test(host);
+  const answer = !nxdomain && type === 1 && kind === 1 ? dns.lookup_name(host).split('.').map(Number) : null;
   if (answer && (answer.length !== 4 || answer.some(value => !Number.isInteger(value) || value < 0 || value > 255))) throw Error('Invalid DNS mapping');
   const response = new Uint8Array(offset + 4 + (answer ? 16 : 0));
-  response.set(query.subarray(0, offset + 4)); response[2] = 0x80 | (query[2] & 1); response[3] = 0x80;
+  response.set(query.subarray(0, offset + 4)); response[2] = 0x80 | (query[2] & 1); response[3] = 0x80 | (nxdomain ? 3 : 0);
   response[6] = 0; response[7] = answer ? 1 : 0; response.fill(0, 8, 12);
   if (answer) response.set([0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, ...answer], offset + 4);
   return response;

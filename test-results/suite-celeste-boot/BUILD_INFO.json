@@ -1,0 +1,10 @@
+{
+  "built_at_utc": "2026-11-09T10:50:39.740874+00:00",
+  "git_sha": "140f2e50448ff3327139b84bb530cde9f86b04e7",
+  "git_dirty_files": 2,
+  "wasm_sha256": "ed01a8441cfc865d64e8facca212aab614b3404e7978118d0ea167c5c36f82a1",
+  "wasm_bytes": 5740573,
+  "js_sha256": "9f0604b9717e8bc5aba4ea65e9c11d3c1da582edde65284debb1cf775cc4760f",
+  "profiling": false,
+  "builder": "build:1354983 (pid 1354983)"
+}

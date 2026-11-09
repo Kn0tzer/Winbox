@@ -1,0 +1,8 @@
+Browser tests (Playwright, needs box):
+  PASS gl32-framebuffer (38606ms)
+  PASS gl32-triangle (39675ms)
+  PASS gl32-webgpu-clear (39576ms)
+
+==================================================
+SUITE RESULT: 3 passed, 0 failed
+==================================================

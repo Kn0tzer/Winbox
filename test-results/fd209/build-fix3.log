@@ -1,0 +1,36 @@
+[bw64-build] waiting for probes to drain (build lock not held)
+[bw64-build] lock acquired (pid=1273066)
+Runtime assets verified (13 files).
+make: Entering directory '/home/ubuntu/winbox-project/worktrees/wt-fd209/project/emscripten'
+MAKEFLAGS is -j2
+make[1]: Entering directory '/home/ubuntu/winbox-project/worktrees/wt-fd209/project/emscripten'
+MAKEFLAGS 
+em++: warning: -pthread + ALLOW_MEMORY_GROWTH may run non-wasm code slowly, see https://github.com/WebAssembly/design/issues/1271 [-Wpthreads-mem-growth]
+file:///opt/emsdk/upstream/emscripten/node_modules/acorn/dist/acorn.mjs:3807
+  var err = new SyntaxError(message);
+            ^
+
+SyntaxError: Unexpected token (21344:57)
+ 565565: () => { try { GLctx.drawElementsBaseVertex(bash,,,,); } catch (e) { globalThis.__bw64glReportBridgeException(glDrawRangeElementsBaseVertex, e); } },  
+                                                         ^ /tmp/emscripten_temp_17dbzy2w/boxedwine64.js:21344:58
+    at pp$4.raise (file:///opt/emsdk/upstream/emscripten/node_modules/acorn/dist/acorn.mjs:3807:13)
+    at pp$9.unexpected (file:///opt/emsdk/upstream/emscripten/node_modules/acorn/dist/acorn.mjs:818:8)
+    at pp$5.parseExprAtomDefault (file:///opt/emsdk/upstream/emscripten/node_modules/acorn/dist/acorn.mjs:3144:8)
+    at pp$5.parseExprAtom (file:///opt/emsdk/upstream/emscripten/node_modules/acorn/dist/acorn.mjs:3139:17)
+    at pp$5.parseExprSubscripts (file:///opt/emsdk/upstream/emscripten/node_modules/acorn/dist/acorn.mjs:2923:19)
+    at pp$5.parseMaybeUnary (file:///opt/emsdk/upstream/emscripten/node_modules/acorn/dist/acorn.mjs:2881:17)
+    at pp$5.parseExprOps (file:///opt/emsdk/upstream/emscripten/node_modules/acorn/dist/acorn.mjs:2809:19)
+    at pp$5.parseMaybeConditional (file:///opt/emsdk/upstream/emscripten/node_modules/acorn/dist/acorn.mjs:2792:19)
+    at pp$5.parseMaybeAssign (file:///opt/emsdk/upstream/emscripten/node_modules/acorn/dist/acorn.mjs:2759:19)
+    at pp$5.parseExprList (file:///opt/emsdk/upstream/emscripten/node_modules/acorn/dist/acorn.mjs:3675:18) {
+  pos: 745334,
+  loc: Position { line: 21344, column: 57 },
+  raisedAt: 745335
+}
+
+Node.js v24.19.0
+em++: error: '/opt/emsdk/node/24.19.0_64bit/bin/node /opt/emsdk/upstream/emscripten/tools/acorn-optimizer.mjs /tmp/emscripten_temp_17dbzy2w/boxedwine64.js unsignPointers -o /tmp/emscripten_temp_17dbzy2w/boxedwine64.jso1.js' failed (returned 1)
+make[1]: *** [makefile:349: Build/Wasm64Mt/boxedwine64.html] Error 1
+make[1]: Leaving directory '/home/ubuntu/winbox-project/worktrees/wt-fd209/project/emscripten'
+make: *** [makefile:218: wasm64-mt] Error 2
+make: Leaving directory '/home/ubuntu/winbox-project/worktrees/wt-fd209/project/emscripten'

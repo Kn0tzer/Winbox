@@ -63,6 +63,29 @@ test('guest DNS returns a synthetic IPv4 address and safely declines IPv6', () =
   query[12] = 0xc0; assert.throws(() => dnsResponse(query, dns));
 });
 
+test('guest DNS refuses never-resolvable special-use names with NXDOMAIN', () => {
+  const queryFor = name => {
+    const labels = name.split('.');
+    const bytes = [0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+    for (const label of labels) bytes.push(label.length, ...[...label].map(c => c.charCodeAt(0)));
+    bytes.push(0, 0, 1, 0, 1);
+    return new Uint8Array(bytes);
+  };
+  let lookups = 0;
+  const dns = { lookup_name: () => { lookups++; return '172.29.1.1'; } };
+  for (const name of ['bw64-nonexistent.invalid', 'host.test', 'host.example', 'INVALID']) {
+    const response = dnsResponse(queryFor(name), dns);
+    assert.equal(response[3] & 0xf, 3, name + ' must answer NXDOMAIN');
+    assert.equal(response[7], 0, name + ' must carry no answers');
+  }
+  assert.equal(lookups, 0, 'a refused name must never reach the synthetic map');
+  const ok = dnsResponse(queryFor('example.com'), dns);
+  assert.equal(ok[3] & 0xf, 0); assert.equal(ok[7], 1); assert.equal(lookups, 1);
+  // A resolvable name that merely contains a reserved word still resolves.
+  const ok2 = dnsResponse(queryFor('invalid.example.com'), dns);
+  assert.equal(ok2[3] & 0xf, 0); assert.equal(ok2[7], 1);
+});
+
 test('DNS over TCP supports fragmented questions and pipelined replies', async () => {
   const query = new Uint8Array([0,29,0x12,0x34,1,0,0,1,0,0,0,0,0,0,7,101,120,97,109,112,108,101,3,99,111,109,0,0,1,0,1]);
   const socket = createDnsSocket({ lookup_name: () => '172.29.2.1' });

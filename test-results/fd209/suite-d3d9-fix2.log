@@ -1,0 +1,10 @@
+Browser tests (Playwright, needs box):
+  PASS d3d9-32 (52401ms)
+[probe-slots] waiting for light slot: queue position 1/1; holders: none
+[probe-slots] waiting for light slot: queue position 1/1; holders: none
+[probe-slots] waiting for light slot: queue position 1/1; holders: none
+  PASS d3d9-comprehensive (451101ms)
+
+==================================================
+SUITE RESULT: 2 passed, 0 failed
+==================================================

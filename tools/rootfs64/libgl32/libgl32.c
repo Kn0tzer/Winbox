@@ -715,9 +715,11 @@ API void glFlush(void) { (void)gl64_trap(GL64_fn_glFlush,0); }
 API void glFinish(void){ (void)gl64_trap(GL64_fn_glFinish,0); }
 API GLenum glGetError(void){ return (GLenum)gl64_trap(GL64_fn_glGetError,0); }
 // Version mode: ask the host which GL profile to advertise. The host reads
-// BW64_GLVERSION ("3*" -> 32, else 21); cached after the first query. This
-// keeps D3D9-era apps on the proven 2.1 strings while D3D11 experiments opt
-// into 3.2 core via ?glversion=3.2 — without any guest-libc dependency.
+// BW64_GLVERSION ("3*" -> 32/33, any other explicit value -> 21); with no
+// explicit value the host now defaults to 33 (FD-209: at the old 2.1
+// default the Windows loader withheld dozens of implemented entry points
+// from wglGetProcAddress). Cached after the first query — without any
+// guest-libc dependency.
 static int gl_version_mode(void) {
     static int cached = 0; // 0 = unknown, else 21, 32 or 33
     if (!cached) {
@@ -760,7 +762,7 @@ API const GLubyte* glGetString(GLenum name) {
     // (adapter_gl.c lists ARB_SAMPLER_OBJECTS at min GL 3.3), so without it
     // D3D11's requested 11_0 is refused and wined3d_device_create() fails.
     static const GLubyte* exts     = (const GLubyte*)
-        "GL_ARB_multitexture GL_ARB_vertex_buffer_object GL_ARB_texture_non_power_of_two GL_ARB_shader_objects GL_ARB_shading_language_100 GL_ARB_vertex_shader GL_ARB_fragment_shader GL_ARB_sampler_objects GL_ARB_framebuffer_object GL_ARB_uniform_buffer_object GL_ARB_draw_buffers GL_ARB_instanced_arrays GL_ARB_polygon_offset_clamp GL_ARB_draw_buffers_blend GL_ARB_texture_cube_map_array GL_ARB_texture_storage GL_ARB_texture_storage_multisample";
+        "GL_ARB_multitexture GL_ARB_vertex_buffer_object GL_ARB_texture_non_power_of_two GL_ARB_shader_objects GL_ARB_shading_language_100 GL_ARB_vertex_shader GL_ARB_fragment_shader GL_ARB_sampler_objects GL_ARB_framebuffer_object GL_ARB_uniform_buffer_object GL_ARB_draw_buffers GL_ARB_instanced_arrays GL_ARB_polygon_offset_clamp GL_ARB_draw_buffers_blend GL_ARB_texture_cube_map_array GL_ARB_texture_storage GL_ARB_texture_storage_multisample GL_ARB_buffer_storage";
     (void)gl64_trap(GL64_fn_glGetString, 0);
     switch (name) {
         case 0x1F00: return vendor;    // GL_VENDOR
@@ -810,6 +812,10 @@ static const char* const g_extList[] = {
     // ARB_texture_multisample instead of disabling it for "immutable storage
     // is not supported" — verified against adapter_gl.c:3663.
     "GL_ARB_texture_storage","GL_ARB_texture_storage_multisample",
+    // FD-209: buffer_storage is backed by the bridge (immutable storage
+    // emulated with glBufferData; contents identical), and the Windows
+    // loader serves glBufferStorage only when the extension is advertised.
+    "GL_ARB_buffer_storage",
 };
 #define G_EXT_COUNT ((int)(sizeof(g_extList)/sizeof(g_extList[0])))
 
@@ -1237,7 +1243,13 @@ API void glTexSubImage3D(GLenum target, GLint level, GLint x, GLint y, GLint z, 
     GL64Args a={{0}}; a.a[0]=target; a.a[1]=(uint64_t)(uint32_t)level; a.a[2]=(uint64_t)(uint32_t)x; a.a[3]=(uint64_t)(uint32_t)y;
     a.a[4]=(uint64_t)(uint32_t)z; a.a[5]=(uint64_t)(uint32_t)w; a.a[6]=(uint64_t)(uint32_t)h; a.a[7]=(uint64_t)(uint32_t)d;
     a.a[8]=fmt; a.a[9]=type; a.a[10]=(uint64_t)(uintptr_t)px; (void)gl64_trap(GL64_fn_glTexSubImage3D,&a); }
-API void glCompressedTexImage3D(GLenum target, GLint level, GLenum ifmt, GLsizei w, GLsizei h, GLsizei d, GLsizei imageSize, const void* data){
+// FD-208: the desktop signature carries a border parameter between depth
+// and imageSize. This entry used to omit it, so every caller's imageSize
+// landed in the border slot and the data pointer became the imageSize
+// value (the bridge then uploaded nothing and the two harness calls
+// disagreed). Border itself is not forwarded: it must be 0 in modern GL
+// and the bridge host call already passes 0.
+API void glCompressedTexImage3D(GLenum target, GLint level, GLenum ifmt, GLsizei w, GLsizei h, GLsizei d, GLint border, GLsizei imageSize, const void* data){
     GL64Args a={{0}}; a.a[0]=target; a.a[1]=(uint64_t)(uint32_t)level; a.a[2]=ifmt; a.a[3]=(uint64_t)(uint32_t)w; a.a[4]=(uint64_t)(uint32_t)h;
     a.a[5]=(uint64_t)(uint32_t)d; a.a[6]=(uint64_t)(uint32_t)imageSize; a.a[7]=(uint64_t)(uintptr_t)data; (void)gl64_trap(GL64_fn_glCompressedTexImage3D,&a); }
 API void glCompressedTexSubImage3D(GLenum target, GLint level, GLint x, GLint y, GLint z, GLsizei w, GLsizei h, GLsizei d, GLenum fmt, GLsizei imageSize, const void* data){
@@ -1245,7 +1257,7 @@ API void glCompressedTexSubImage3D(GLenum target, GLint level, GLint x, GLint y,
     a.a[4]=(uint64_t)(uint32_t)z; a.a[5]=(uint64_t)(uint32_t)w; a.a[6]=(uint64_t)(uint32_t)h; a.a[7]=(uint64_t)(uint32_t)d;
     a.a[8]=fmt; a.a[9]=(uint64_t)(uint32_t)imageSize; a.a[10]=(uint64_t)(uintptr_t)data; (void)gl64_trap(GL64_fn_glCompressedTexSubImage3D,&a); }
 API void glTexImage3DEXT(GLenum t, GLint l, GLenum i, GLsizei w, GLsizei h, GLsizei d, GLint b, GLenum f, GLenum ty, const void* p){ glTexImage3D(t,l,i,w,h,d,b,f,ty,p); }
-API void glCompressedTexImage3DARB(GLenum t, GLint l, GLenum i, GLsizei w, GLsizei h, GLsizei d, GLsizei s, const void* p){ glCompressedTexImage3D(t,l,i,w,h,d,s,p); }
+API void glCompressedTexImage3DARB(GLenum t, GLint l, GLenum i, GLsizei w, GLsizei h, GLsizei d, GLint b, GLsizei s, const void* p){ glCompressedTexImage3D(t,l,i,w,h,d,b,s,p); }
 API void glTexImage2DMultisample(GLenum t, GLsizei s, GLenum i, GLsizei w, GLsizei h, GLboolean fixed){
     GL64Args a={{0}}; a.a[0]=t; a.a[1]=(uint64_t)(uint32_t)s; a.a[2]=i; a.a[3]=(uint64_t)(uint32_t)w; a.a[4]=(uint64_t)(uint32_t)h; a.a[5]=fixed; (void)gl64_trap(GL64_fn_glTexImage2DMultisample,&a); }
 API void glTexImage3DMultisample(GLenum t, GLsizei s, GLenum i, GLsizei w, GLsizei h, GLsizei d, GLboolean fixed){

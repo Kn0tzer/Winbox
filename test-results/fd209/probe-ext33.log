@@ -1,0 +1,11 @@
+PROBE SLOT ACQUIRED
+SESSION READY
+ASSETS STAGED [["glcov.exe",406345],["libGL.so.1",155544]]
+BOOTSTRAP COMPLETE
+SPAWN 1
+PROGRESS {"glcovLines":0,"tail":["log: deskpin: READY hwnd=0x10048\r","log: wine64session: registerFile '/home/username/glcov.exe' -> native '/root/home/username/glcov.exe' (registered)"]}
+PROGRESS {"glcovLines":66,"tail":["log: GLCOV: glDepthRange=0,0:34000:33000\r","log: GLCOV-TRY: glDetachShader\r"]}
+PROGRESS {"glcovLines":212,"tail":["log: GLCOV-TRY: glTexBufferRangeARB\r","log: GLCOV-NOTE: no proc: glTexBufferRangeARB\r"]}
+GLCOV VERDICT {"passed":true,"glcovResult":0,"handlersTested":334,"lastTryBeforeEnd":"glXSelectEvent","provenance":[{"name":"glcov.exe","path":"tools/glcov/glcov.exe","bytes":406345,"sha256":"ed9082042f7d5237794eae33feaac6d4bebf9aa15811365500f658f7786d130c"},{"name":"libGL.so.1","path":"tools/rootfs64/libgl64/libGL.so.1","bytes":155544,"sha256":"5379e89e2292b3f5b259a16485630f3949b3132cecbb40c7e973b1ca2c46e872"}],"errors":[]}
+PROBE SLOT RELEASED
+EXT33_EXIT=0
