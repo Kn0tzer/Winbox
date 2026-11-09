@@ -1448,7 +1448,6 @@ static void t_stubs(void) {
     { trybegin("vkCmdNextSubpass2KHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkCmdNextSubpass2KHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkCmdNextSubpass2KHR)(); uint64_t _t3=qpf_us(); rep("vkCmdNextSubpass2KHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkCmdNextSubpassKHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkCmdNextSubpassKHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkCmdNextSubpassKHR)(); uint64_t _t3=qpf_us(); rep("vkCmdNextSubpassKHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkCmdPushDescriptorSet"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkCmdPushDescriptorSet)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkCmdPushDescriptorSet)(); uint64_t _t3=qpf_us(); rep("vkCmdPushDescriptorSet",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
-    { trybegin("vkCmdResetEvent"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkCmdResetEvent)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkCmdResetEvent)(); uint64_t _t3=qpf_us(); rep("vkCmdResetEvent",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkCmdResetQueryPool"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkCmdResetQueryPool)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkCmdResetQueryPool)(); uint64_t _t3=qpf_us(); rep("vkCmdResetQueryPool",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkCmdSetBlendConstant"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkCmdSetBlendConstant)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkCmdSetBlendConstant)(); uint64_t _t3=qpf_us(); rep("vkCmdSetBlendConstant",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkCmdSetCullModeEXT"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkCmdSetCullModeEXT)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkCmdSetCullModeEXT)(); uint64_t _t3=qpf_us(); rep("vkCmdSetCullModeEXT",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
@@ -1457,7 +1456,6 @@ static void t_stubs(void) {
     { trybegin("vkCmdSetDepthBiasNV"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkCmdSetDepthBiasNV)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkCmdSetDepthBiasNV)(); uint64_t _t3=qpf_us(); rep("vkCmdSetDepthBiasNV",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkCmdSetDepthBounds"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkCmdSetDepthBounds)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkCmdSetDepthBounds)(); uint64_t _t3=qpf_us(); rep("vkCmdSetDepthBounds",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkCmdSetDeviceMask"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkCmdSetDeviceMask)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkCmdSetDeviceMask)(); uint64_t _t3=qpf_us(); rep("vkCmdSetDeviceMask",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
-    { trybegin("vkCmdSetEvent"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkCmdSetEvent)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkCmdSetEvent)(); uint64_t _t3=qpf_us(); rep("vkCmdSetEvent",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkCmdSetFrontFaceEXT"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkCmdSetFrontFaceEXT)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkCmdSetFrontFaceEXT)(); uint64_t _t3=qpf_us(); rep("vkCmdSetFrontFaceEXT",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkCmdSetLineWidth"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkCmdSetLineWidth)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkCmdSetLineWidth)(); uint64_t _t3=qpf_us(); rep("vkCmdSetLineWidth",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkCmdSetPrimitiveTopologyEXT"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkCmdSetPrimitiveTopologyEXT)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkCmdSetPrimitiveTopologyEXT)(); uint64_t _t3=qpf_us(); rep("vkCmdSetPrimitiveTopologyEXT",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
@@ -1484,7 +1482,6 @@ static void t_stubs(void) {
     { trybegin("vkDestroyQueryPool"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkDestroyQueryPool)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkDestroyQueryPool)(); uint64_t _t3=qpf_us(); rep("vkDestroyQueryPool",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkDestroySamplerYcbcrConversion"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkDestroySamplerYcbcrConversion)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkDestroySamplerYcbcrConversion)(); uint64_t _t3=qpf_us(); rep("vkDestroySamplerYcbcrConversion",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkDestroySwapchainKHR2"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkDestroySwapchainKHR2)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkDestroySwapchainKHR2)(); uint64_t _t3=qpf_us(); rep("vkDestroySwapchainKHR2",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
-    { trybegin("vkFreeDescriptorSets"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkFreeDescriptorSets)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkFreeDescriptorSets)(); uint64_t _t3=qpf_us(); rep("vkFreeDescriptorSets",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetBufferDeviceAddressKHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetBufferDeviceAddressKHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetBufferDeviceAddressKHR)(); uint64_t _t3=qpf_us(); rep("vkGetBufferDeviceAddressKHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetBufferMemoryRequirements2KHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetBufferMemoryRequirements2KHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetBufferMemoryRequirements2KHR)(); uint64_t _t3=qpf_us(); rep("vkGetBufferMemoryRequirements2KHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetBufferOpaqueCaptureAddressKHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetBufferOpaqueCaptureAddressKHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetBufferOpaqueCaptureAddressKHR)(); uint64_t _t3=qpf_us(); rep("vkGetBufferOpaqueCaptureAddressKHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
@@ -1493,7 +1490,6 @@ static void t_stubs(void) {
     { trybegin("vkGetDeviceGroupPeerMemoryFeatures"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetDeviceGroupPeerMemoryFeatures)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetDeviceGroupPeerMemoryFeatures)(); uint64_t _t3=qpf_us(); rep("vkGetDeviceGroupPeerMemoryFeatures",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetDeviceGroupPresentCapabilitiesKHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetDeviceGroupPresentCapabilitiesKHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetDeviceGroupPresentCapabilitiesKHR)(); uint64_t _t3=qpf_us(); rep("vkGetDeviceGroupPresentCapabilitiesKHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetDeviceGroupSurfacePresentModesKHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetDeviceGroupSurfacePresentModesKHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetDeviceGroupSurfacePresentModesKHR)(); uint64_t _t3=qpf_us(); rep("vkGetDeviceGroupSurfacePresentModesKHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
-    { trybegin("vkGetDeviceImageMemoryRequirements"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetDeviceImageMemoryRequirements)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetDeviceImageMemoryRequirements)(); uint64_t _t3=qpf_us(); rep("vkGetDeviceImageMemoryRequirements",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetDeviceImageSparseMemoryRequirements"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetDeviceImageSparseMemoryRequirements)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetDeviceImageSparseMemoryRequirements)(); uint64_t _t3=qpf_us(); rep("vkGetDeviceImageSparseMemoryRequirements",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetDeviceImageSubresourceLayout"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetDeviceImageSubresourceLayout)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetDeviceImageSubresourceLayout)(); uint64_t _t3=qpf_us(); rep("vkGetDeviceImageSubresourceLayout",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetDeviceMemoryCommitment"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetDeviceMemoryCommitment)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetDeviceMemoryCommitment)(); uint64_t _t3=qpf_us(); rep("vkGetDeviceMemoryCommitment",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
@@ -1508,7 +1504,6 @@ static void t_stubs(void) {
     { note("SKIP vkGetDeviceProcAddr: stub row calls the real loader entry; wedged the guest (fault loop)");
       trybegin("vkGetDeviceProcAddr"); rep("vkGetDeviceProcAddr",-2,-2,0,0); }
     { trybegin("vkGetDeviceQueue2"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetDeviceQueue2)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetDeviceQueue2)(); uint64_t _t3=qpf_us(); rep("vkGetDeviceQueue2",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
-    { trybegin("vkGetEventStatus"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetEventStatus)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetEventStatus)(); uint64_t _t3=qpf_us(); rep("vkGetEventStatus",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetFenceStatus2"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetFenceStatus2)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetFenceStatus2)(); uint64_t _t3=qpf_us(); rep("vkGetFenceStatus2",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetFenceStatus2KHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetFenceStatus2KHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetFenceStatus2KHR)(); uint64_t _t3=qpf_us(); rep("vkGetFenceStatus2KHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetImageMemoryRequirements2KHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetImageMemoryRequirements2KHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetImageMemoryRequirements2KHR)(); uint64_t _t3=qpf_us(); rep("vkGetImageMemoryRequirements2KHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
@@ -1523,32 +1518,161 @@ static void t_stubs(void) {
       trybegin("vkGetInstanceProcAddr"); rep("vkGetInstanceProcAddr",-2,-2,0,0); }
     { trybegin("vkGetPhysicalDeviceFeatures2KHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetPhysicalDeviceFeatures2KHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetPhysicalDeviceFeatures2KHR)(); uint64_t _t3=qpf_us(); rep("vkGetPhysicalDeviceFeatures2KHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetPhysicalDeviceFormatProperties2KHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetPhysicalDeviceFormatProperties2KHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetPhysicalDeviceFormatProperties2KHR)(); uint64_t _t3=qpf_us(); rep("vkGetPhysicalDeviceFormatProperties2KHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
-    { trybegin("vkGetPhysicalDeviceImageFormatProperties2KHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetPhysicalDeviceImageFormatProperties2KHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetPhysicalDeviceImageFormatProperties2KHR)(); uint64_t _t3=qpf_us(); rep("vkGetPhysicalDeviceImageFormatProperties2KHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetPhysicalDeviceMemoryProperties2KHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetPhysicalDeviceMemoryProperties2KHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetPhysicalDeviceMemoryProperties2KHR)(); uint64_t _t3=qpf_us(); rep("vkGetPhysicalDeviceMemoryProperties2KHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetPhysicalDevicePresentRectanglesKHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetPhysicalDevicePresentRectanglesKHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetPhysicalDevicePresentRectanglesKHR)(); uint64_t _t3=qpf_us(); rep("vkGetPhysicalDevicePresentRectanglesKHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
-    { trybegin("vkGetPhysicalDeviceProperties2KHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetPhysicalDeviceProperties2KHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetPhysicalDeviceProperties2KHR)(); uint64_t _t3=qpf_us(); rep("vkGetPhysicalDeviceProperties2KHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetPhysicalDeviceQueueFamilyProperties2KHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetPhysicalDeviceQueueFamilyProperties2KHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetPhysicalDeviceQueueFamilyProperties2KHR)(); uint64_t _t3=qpf_us(); rep("vkGetPhysicalDeviceQueueFamilyProperties2KHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetPhysicalDeviceSurfaceCapabilities2EXT"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetPhysicalDeviceSurfaceCapabilities2EXT)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetPhysicalDeviceSurfaceCapabilities2EXT)(); uint64_t _t3=qpf_us(); rep("vkGetPhysicalDeviceSurfaceCapabilities2EXT",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetPhysicalDeviceSurfaceFormats2EXT"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetPhysicalDeviceSurfaceFormats2EXT)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetPhysicalDeviceSurfaceFormats2EXT)(); uint64_t _t3=qpf_us(); rep("vkGetPhysicalDeviceSurfaceFormats2EXT",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetPhysicalDeviceSurfacePresentModes2EXT"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetPhysicalDeviceSurfacePresentModes2EXT)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetPhysicalDeviceSurfacePresentModes2EXT)(); uint64_t _t3=qpf_us(); rep("vkGetPhysicalDeviceSurfacePresentModes2EXT",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetPipelineCacheData"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetPipelineCacheData)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetPipelineCacheData)(); uint64_t _t3=qpf_us(); rep("vkGetPipelineCacheData",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetPipelineLayoutSupport"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetPipelineLayoutSupport)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetPipelineLayoutSupport)(); uint64_t _t3=qpf_us(); rep("vkGetPipelineLayoutSupport",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
-    { trybegin("vkGetQueryPoolResults"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetQueryPoolResults)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetQueryPoolResults)(); uint64_t _t3=qpf_us(); rep("vkGetQueryPoolResults",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetQueryPoolResults64"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetQueryPoolResults64)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetQueryPoolResults64)(); uint64_t _t3=qpf_us(); rep("vkGetQueryPoolResults64",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetQueryPoolResults64KHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetQueryPoolResults64KHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetQueryPoolResults64KHR)(); uint64_t _t3=qpf_us(); rep("vkGetQueryPoolResults64KHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetRenderAreaGranularity"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetRenderAreaGranularity)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetRenderAreaGranularity)(); uint64_t _t3=qpf_us(); rep("vkGetRenderAreaGranularity",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetRenderingAreaGranularity"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetRenderingAreaGranularity)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetRenderingAreaGranularity)(); uint64_t _t3=qpf_us(); rep("vkGetRenderingAreaGranularity",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkMergePipelineCaches"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkMergePipelineCaches)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkMergePipelineCaches)(); uint64_t _t3=qpf_us(); rep("vkMergePipelineCaches",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkQueueBindSparse"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkQueueBindSparse)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkQueueBindSparse)(); uint64_t _t3=qpf_us(); rep("vkQueueBindSparse",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
-    { trybegin("vkResetEvent"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkResetEvent)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkResetEvent)(); uint64_t _t3=qpf_us(); rep("vkResetEvent",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkResetPipelineCache"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkResetPipelineCache)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkResetPipelineCache)(); uint64_t _t3=qpf_us(); rep("vkResetPipelineCache",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkSetDebugUtilsObjectNameEXT"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkSetDebugUtilsObjectNameEXT)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkSetDebugUtilsObjectNameEXT)(); uint64_t _t3=qpf_us(); rep("vkSetDebugUtilsObjectNameEXT",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkSetDebugUtilsObjectTagEXT"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkSetDebugUtilsObjectTagEXT)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkSetDebugUtilsObjectTagEXT)(); uint64_t _t3=qpf_us(); rep("vkSetDebugUtilsObjectTagEXT",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
-    { trybegin("vkSetEvent"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkSetEvent)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkSetEvent)(); uint64_t _t3=qpf_us(); rep("vkSetEvent",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkSubmitDebugUtilsMessageEXT"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkSubmitDebugUtilsMessageEXT)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkSubmitDebugUtilsMessageEXT)(); uint64_t _t3=qpf_us(); rep("vkSubmitDebugUtilsMessageEXT",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkSwapchainImagesKHR2"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkSwapchainImagesKHR2)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkSwapchainImagesKHR2)(); uint64_t _t3=qpf_us(); rep("vkSwapchainImagesKHR2",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkTrimCommandPool"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkTrimCommandPool)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkTrimCommandPool)(); uint64_t _t3=qpf_us(); rep("vkTrimCommandPool",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkTrimCommandPoolKHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkTrimCommandPoolKHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkTrimCommandPoolKHR)(); uint64_t _t3=qpf_us(); rep("vkTrimCommandPoolKHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
+}
+
+
+/* ---- FD-206: real-argument calls for ten implemented handlers ----
+ * These ten names used to sit in t_stubs(), whose probes call the
+ * function pointer with NO arguments at all
+ * (((void*(*)())pfn)()). That probe shape is only meaningful for a
+ * thunk that answers without touching its arguments (the -8 loud
+ * stubs). These ten are implemented handlers that validate their
+ * arguments, so the no-argument probe delivered whatever the
+ * registers happened to hold and every one answered
+ * VK_ERROR_INITIALIZATION_FAILED (-3) at its argument validation --
+ * the uniform -3 measured in 2026-11-07 and filed as FD-206. They
+ * are called here with the valid arguments the coverage design
+ * always intended (the setup chain's own objects), in t_stubs()'s
+ * place in the sequence (after it, before teardown), and their rows
+ * record the handlers' real answers. Expected answers, per spec:
+ *   vkSetEvent / vkResetEvent            VK_SUCCESS (0)
+ *   vkGetEventStatus                     VK_EVENT_RESET (4) after a
+ *                                        reset, VK_EVENT_SET (3)
+ *                                        after a set -- both are
+ *                                        recorded; the results map
+ *                                        keeps the last (SET) line
+ *   vkCmdSetEvent / vkCmdResetEvent      void (recorded 0)
+ *   vkGetQueryPoolResults                VK_NOT_READY (1) for a
+ *                                        query never executed;
+ *                                        VK_SUCCESS (0), value 1,
+ *                                        for one executed below
+ *   vkFreeDescriptorSets                 VK_SUCCESS (0)
+ *   vkGetDeviceImageMemoryRequirements   void (recorded 0)
+ *   vkGetPhysicalDeviceProperties2KHR    void (recorded 0)
+ *   vkGetPhysicalDeviceImageFormatProperties2KHR  VK_SUCCESS (0)
+ * Four more rows of the same no-argument class were seen answering
+ * -3 in this lane's first fixed run (the garbage a no-argument probe
+ * delivers changes with every recompilation of the harness, so the
+ * affected rows change too): vkCreateQueryPool and the void KHR
+ * aliases vkGetPhysicalDeviceFeatures2KHR,
+ * vkGetPhysicalDeviceMemoryProperties2KHR and
+ * vkGetPhysicalDeviceQueueFamilyProperties2KHR. They are not part
+ * of FD-206's named ten -- vkCreateQueryPool is already called with
+ * real arguments by the setup chain -- but they are given real
+ * calls here as well, so no implemented handler's row in the
+ * matrix depends on register garbage.
+ */
+static void t_fd206_calls(void) {
+    note("FD-206 real-argument calls begin");
+    /* -- event family, host-side -- */
+    T2(vkResetEvent, pvkResetEvent(dev, event));
+    T2(vkGetEventStatus, pvkGetEventStatus(dev, event));
+    T2(vkSetEvent, pvkSetEvent(dev, event));
+    T2(vkGetEventStatus, pvkGetEventStatus(dev, event));
+    /* -- query results for a query that was never executed -- */
+    { uint64_t buf[2] = { 0, 0 };
+      note("FD-206: vkGetQueryPoolResults on never-executed query 1 (expect VK_NOT_READY=1)");
+      T2(vkGetQueryPoolResults, pvkGetQueryPoolResults(dev, qpool, 1, 1,
+         sizeof(buf), buf, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT)); }
+    /* -- command-buffer section: event commands + one executed query -- */
+    pvkResetCommandBuffer(cmdbuf, 0);
+    { VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+          0, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, 0 };
+      pvkBeginCommandBuffer(cmdbuf, &bi);
+      T2V(vkCmdResetEvent, pvkCmdResetEvent(cmdbuf, event,
+          VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
+      T2V(vkCmdSetEvent, pvkCmdSetEvent(cmdbuf, event,
+          VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
+      pvkCmdBeginQuery(cmdbuf, qpool, 0, 0);
+      pvkCmdEndQuery(cmdbuf, qpool, 0);
+      pvkEndCommandBuffer(cmdbuf);
+      { VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO, 0,
+            0, 0, 0, 1, &cmdbuf, 0, 0 };
+        pvkQueueSubmit(queue, 1, &si, fence); }
+      pvkQueueWaitIdle(queue); }
+    /* -- query results for the executed query -- */
+    { uint64_t buf[2] = { 0, 0 };
+      T2(vkGetQueryPoolResults, pvkGetQueryPoolResults(dev, qpool, 0, 1,
+         sizeof(buf), buf, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT));
+      note("FD-206: executed occlusion query 0 value: %u (expect 1)",
+           (unsigned)buf[0]); }
+    /* -- free a descriptor set from a pool created for freeing -- */
+    { VkDescriptorPoolSize ps = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 };
+      VkDescriptorPoolCreateInfo ci = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+          0, VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, 1, 1, &ps };
+      VkDescriptorPool lp = 0;
+      if (pvkCreateDescriptorPool(dev, &ci, 0, &lp) == VK_SUCCESS && lp) {
+        VkDescriptorSetAllocateInfo ai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            0, lp, 1, &dslayout };
+        VkDescriptorSet ls = 0;
+        if (pvkAllocateDescriptorSets(dev, &ai, &ls) == VK_SUCCESS && ls)
+          T2(vkFreeDescriptorSets, pvkFreeDescriptorSets(dev, lp, 1, &ls));
+        pvkDestroyDescriptorPool(dev, lp, 0); } }
+    /* -- device image memory requirements (void; sized from create info) -- */
+    { VkImageCreateInfo ici = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, 0, 0,
+          VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, { 64, 64, 1 }, 1, 1,
+          VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL,
+          VK_IMAGE_USAGE_SAMPLED_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, 0,
+          VK_IMAGE_LAYOUT_UNDEFINED };
+      VkDeviceImageMemoryRequirements req = {
+          VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS, 0, &ici, 0 };
+      VkMemoryRequirements2 mr2 = { VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, 0, {0} };
+      T2V(vkGetDeviceImageMemoryRequirements,
+          pvkGetDeviceImageMemoryRequirements(dev, &req, &mr2));
+      note("FD-206: device image memory requirements size: %u",
+           (unsigned)mr2.memoryRequirements.size); }
+    /* -- the two KHR aliases, with the same arguments as their core twins -- */
+    { VkPhysicalDeviceProperties2 p2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, 0, {0} };
+      T2V(vkGetPhysicalDeviceProperties2KHR,
+          pvkGetPhysicalDeviceProperties2KHR(phys, &p2)); }
+    { VkPhysicalDeviceImageFormatInfo2 ii = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+          0, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+          VK_IMAGE_USAGE_SAMPLED_BIT, 0 };
+      VkImageFormatProperties2 ifp2 = { VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2, 0, {0} };
+      T2(vkGetPhysicalDeviceImageFormatProperties2KHR,
+         pvkGetPhysicalDeviceImageFormatProperties2KHR(phys, &ii, &ifp2)); }
+    /* -- same-class rows: a pool create and the void KHR aliases -- */
+    { VkQueryPoolCreateInfo ci = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+          0, 0, VK_QUERY_TYPE_OCCLUSION, 1, 0 };
+      VkQueryPool lp = 0;
+      T2(vkCreateQueryPool, pvkCreateQueryPool(dev, &ci, 0, &lp));
+      if (lp) pvkDestroyQueryPool(dev, lp, 0); }
+    { VkPhysicalDeviceFeatures2 f2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, 0, {0} };
+      T2V(vkGetPhysicalDeviceFeatures2KHR,
+          pvkGetPhysicalDeviceFeatures2KHR(phys, &f2)); }
+    { VkPhysicalDeviceMemoryProperties2 m2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, 0, {0} };
+      T2V(vkGetPhysicalDeviceMemoryProperties2KHR,
+          pvkGetPhysicalDeviceMemoryProperties2KHR(phys, &m2)); }
+    { uint32_t n = 0;
+      pvkGetPhysicalDeviceQueueFamilyProperties(phys, &n, 0);
+      VkQueueFamilyProperties2 q2[8]; uint32_t n2 = 8;
+      for (uint32_t i = 0; i < 8; i++) {
+        q2[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2;
+        q2[i].pNext = 0; }
+      T2V(vkGetPhysicalDeviceQueueFamilyProperties2KHR,
+          pvkGetPhysicalDeviceQueueFamilyProperties2KHR(phys, &n2, q2)); }
+    note("FD-206 real-argument calls end");
 }
 
 int main(void) {
@@ -1836,6 +1960,7 @@ int main(void) {
     t_surface_swapchain();
     t_extended_coverage();
     t_stubs();
+    t_fd206_calls();
     t_destroy_all();
     fprintf(stderr, "vkcov: RESULT 0\n");
     return 0;
