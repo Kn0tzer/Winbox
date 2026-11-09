@@ -949,6 +949,14 @@ LegacyClientArray g_legacyTexCoordArrays[2] = {
 U32 g_legacyClientActiveTextureUnit = 0;
 GLuint g_legacyArrayBuffer = 0;
 GLuint g_legacyElementArrayBuffer = 0;
+// FD-268: Emscripten's glemu VAO emulation wipes the live ARRAY_BUFFER and
+// ELEMENT_ARRAY_BUFFER bindings on every glBindVertexArray and replays only
+// what was recorded while that VAO was current; the bindings made while no
+// VAO was current (the default VAO's state) are lost. Track the current VAO
+// and the default VAO's element-array binding so the bind handler can
+// restore them.
+GLuint g_currentVao = 0;
+GLuint g_defaultVaoElementArrayBuffer = 0;
 
 size_t legacyTypeSize(GLenum type) {
     switch (type) {
@@ -3549,6 +3557,10 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 GLuint buffer = (GLuint)ai(args,1);
                 if (target == GL_ARRAY_BUFFER) g_legacyArrayBuffer = buffer;
                 else if (target == GL_ELEMENT_ARRAY_BUFFER) g_legacyElementArrayBuffer = buffer;
+                // FD-268: an element-array bind made while no VAO is current
+                // belongs to the default VAO; the bind handler restores it
+                // when the guest unbinds back to VAO 0.
+                if (target == GL_ELEMENT_ARRAY_BUFFER && g_currentVao == 0) g_defaultVaoElementArrayBuffer = buffer;
                 else if (target == GL_TRANSFORM_FEEDBACK_BUFFER) g_tfGenericBinding = buffer; // FD-208
                 GL_MT(glBindBuffer(target, buffer));
             }
@@ -3639,9 +3651,28 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glGenVertexArrays:
             if (g_glContext && args.a[1]) genObjects(cpu, args, GenKind::VertexArray);
             return 0;
-        case GL64_fn_glBindVertexArray:
-            if (g_glContext) GL_MT(glBindVertexArray((GLuint)ai(args,0)));
+        case GL64_fn_glBindVertexArray: {
+            if (g_glContext) {
+                GLuint vao = (GLuint)ai(args,0);
+                // FD-268: Emscripten's glemu VAO emulation (LEGACY_GL_EMULATION)
+                // wipes the live ARRAY_BUFFER and ELEMENT_ARRAY_BUFFER bindings
+                // on every bind/unbind and replays only what was recorded while
+                // that VAO was current. Desktop GL keeps ARRAY_BUFFER across VAO
+                // changes (it is not VAO state), and unbinding to VAO 0 restores
+                // the default VAO's element-array binding. Without this, a guest
+                // that binds its buffers and then binds/unbinds a VAO (the
+                // standard setup order) loses both bindings, and every later
+                // buffer call answers INVALID_OPERATION. Restore both around the
+                // call: the array buffer always, the element buffer only on
+                // unbind (binding a nonzero VAO must keep the replayed
+                // VAO-recorded element binding, which is the spec-correct one).
+                GL_MT(glBindVertexArray(vao));
+                g_currentVao = vao;
+                GL_MT(glBindBuffer(GL_ARRAY_BUFFER, g_legacyArrayBuffer));
+                if (vao == 0) GL_MT(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_defaultVaoElementArrayBuffer));
+            }
             return 0;
+        }
         case GL64_fn_glDeleteVertexArrays:
             if (g_glContext && args.a[1]) deleteObjects(cpu, args, GenKind::VertexArray);
             return 0;
@@ -5932,6 +5963,15 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     EM_ASM({ try {
                         if (typeof GLctx === 'undefined') return;
                         var r = GLctx.getIndexedParameter($0, $1);
+                        if (GLctx.getError() !== 0 || r === null || r === undefined) {
+                            // FD-268: this host's WebGL2 getIndexedParameter raises
+                            // INVALID_ENUM for every pname tried (BLEND,
+                            // COLOR_WRITEMASK, ...), so fall back to the scalar
+                            // query, which answers the draw-buffer-0 value. The
+                            // getError call above already consumed the error, so
+                            // it cannot leak into the guest's own checks.
+                            r = GLctx.getParameter($0);
+                        }
                         if (r && r.length !== undefined) r = r[0];
                         HEAPU8[$2 >>> 0] = r ? 1 : 0;
                     } catch (e) { globalThis.__bw64glReportBridgeException('glGetBooleani_v', e); } }, (int)pname, (int)idx, (int)(uintptr_t)vp);

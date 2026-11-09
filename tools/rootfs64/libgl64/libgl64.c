@@ -1320,9 +1320,16 @@ API void glGetCompressedTexImage(GLenum t, GLint level, void* img){ GL64Args a={
 API void glCompressedTexSubImage2D(GLenum t, GLint l, GLint x, GLint y, GLsizei w, GLsizei h, GLenum f, GLsizei s, const void* d){ GL64Args a={{0}}; a.a[0]=t; a.a[1]=(uint64_t)(uint32_t)l; a.a[2]=(uint64_t)(uint32_t)x; a.a[3]=(uint64_t)(uint32_t)y; a.a[4]=(uint64_t)(uint32_t)w; a.a[5]=(uint64_t)(uint32_t)h; a.a[6]=f; a.a[7]=(uint64_t)(uint32_t)s; a.a[8]=(uint64_t)(uintptr_t)d; (void)gl64_trap(GL64_fn_glCompressedTexSubImage2D,&a); }
 
 // --- indexed state (GL 3.0 core / ARB_blend_func_extended) ---
-API void glEnablei(GLuint i, GLenum cap){ GL64Args a={{0}}; a.a[0]=i; a.a[1]=cap; (void)gl64_trap(GL64_fn_glEnablei,&a); }
-API void glDisablei(GLuint i, GLenum cap){ GL64Args a={{0}}; a.a[0]=i; a.a[1]=cap; (void)gl64_trap(GL64_fn_glDisablei,&a); }
-API GLboolean glIsEnabledi(GLuint i, GLenum cap){ GL64Args a={{0}}; a.a[0]=i; a.a[1]=cap; return (GLboolean)gl64_trap(GL64_fn_glIsEnabledi,&a); }
+// FD-268: these three used to declare their parameters in the trap (ABI)
+// order (index, cap) instead of the desktop order (target, index), so a
+// guest calling glEnablei(GL_BLEND, 0) had its arguments swapped by the time
+// they reached the bridge handler (cap arrived as 0 = INVALID_ENUM). The trap
+// layout itself is unchanged (a.a[0] = index, a.a[1] = cap); only the C
+// signature now matches the desktop call, as every other indexed entry
+// point in this file already does.
+API void glEnablei(GLenum target, GLuint index){ GL64Args a={{0}}; a.a[0]=index; a.a[1]=target; (void)gl64_trap(GL64_fn_glEnablei,&a); }
+API void glDisablei(GLenum target, GLuint index){ GL64Args a={{0}}; a.a[0]=index; a.a[1]=target; (void)gl64_trap(GL64_fn_glDisablei,&a); }
+API GLboolean glIsEnabledi(GLenum target, GLuint index){ GL64Args a={{0}}; a.a[0]=index; a.a[1]=target; return (GLboolean)gl64_trap(GL64_fn_glIsEnabledi,&a); }
 API void glBlendEquationi(GLuint buf, GLenum mode){ GL64Args a={{0}}; a.a[0]=buf; a.a[1]=mode; (void)gl64_trap(GL64_fn_glBlendEquationi,&a); }
 API void glBlendEquationSeparatei(GLuint buf, GLenum rgb, GLenum alpha){ GL64Args a={{0}}; a.a[0]=buf; a.a[1]=rgb; a.a[2]=alpha; (void)gl64_trap(GL64_fn_glBlendEquationSeparatei,&a); }
 API void glBlendFunci(GLuint buf, GLenum s, GLenum d){ GL64Args a={{0}}; a.a[0]=buf; a.a[1]=s; a.a[2]=d; (void)gl64_trap(GL64_fn_glBlendFunci,&a); }
