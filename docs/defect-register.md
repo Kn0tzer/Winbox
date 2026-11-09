@@ -11214,7 +11214,7 @@ do not close the entry until they land.
 
 - **FD-264 — The 64-bit boot smoke test never sees
   its payload run: a freshly booted 64-bit `cmd`
-  does not print within the test's waits.** *(Medium
+  does not print within the test's waits. CLOSED 2026-11-08 — see CL-193.** *(Medium
   — the regression guard for 64-bit starting is
   blind, and 64-bit cold-start latency is
   implicated. Filed by the batch-11 merge lane,
@@ -16696,6 +16696,23 @@ its lane and is not a defect, for the stated reason:
   scheduled the restart, restarted at 39.5 s, and mapped at 75.7 s;
   unit tests 27/27 pass. Record:
   `docs/reports/fd266-silent-after-containment-20261108.md`.
+- **CL-193 — FD-264 closed.** Fixed on branch
+  `lane-fd264` (commit `8a3304602`): the 64-bit boot smoke test's vkboot
+  wait is 360 s instead of 240 s. The guest was never stuck — measured live
+  on the batch-12 build, the booted shell prints `vkboot` at user32+293–296 s
+  and exits 0; the boot got slower in batch 11 because every fresh 64-bit
+  boot now installs the HID/XInput drivers (nine installs) that batch 10
+  never did, so the 240 s budget expired ~60 s before the echo landed.
+  Proof: the test's own waits replayed against two saved live consoles
+  (`test-results/fd264-proof/live-boot64/live-g1-discovery/console.txt` and
+  `live-g1/console.txt`) both pass — vkboot at user32+296.2 s and
+  user32+293.2 s, winstation within 25 s after; replay
+  `test-results/fd264-proof/replay-boot64-waits.py` exit 0. The
+  checking-service pipeline was not run: blocked on disk (899 MB free
+  against the pipeline's ~929 MB workspace copy); citations 0 drift and
+  JS unit 353/1 (only the known bare-checkout artifact) were verified
+  locally on this branch instead. Record:
+  `docs/reports/fd264-boot64-smoke-20261108.md`.
 - **CL-20 — The native Vulkan bridge test harness
   aborted at the pipeline-cache assertions, so every
   later section never ran (was FD-50).** Fixed in
