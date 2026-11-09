@@ -2683,16 +2683,27 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             return 0;
         }
         case GL64_fn_glVersionMode: {
-            // Which GL profile the guest shim advertises. BW64_GLVERSION=3* opts
-            // D3D11 experiments into 3.2 core strings; default stays 2.1 so the
-            // proven D3D9-era path is untouched. "33" additionally probes the 3.3
-            // core-profile path — A2's diagnosis §2 H4/O5 showed 3.3 is DANGEROUS
-            // (wined3d then takes wglCreateContextAttribsARB + glGetStringi, which
-            // glGetStringi is implemented guest-side now (libgl64.c serves the
-            // curated extension list), so 3.3 stays opt-in only for the
-            // remaining context-attribs surface.
+            // Which GL profile the guest shim advertises. FD-209 (2026-11-09):
+            // the default is now the 3.3 profile. Wine's opengl32 serves
+            // wglGetProcAddress lookups from the advertised profile, and at
+            // the old 2.1 default it withheld 49 entry points whose bridge
+            // handlers were already implemented (vertex-array objects, sync
+            // objects, instanced/base-vertex draws, glMapBufferRange,
+            // glGetStringi, unsigned uniforms, and more) — a Windows guest
+            // could not resolve them at all. Measured on the glcov harness:
+            // at 2.1 those 49 record "no export"; at 3.3 they resolve and
+            // answer, and every previously-resolving row keeps its exact
+            // answer. The A2-era warning that 3.3 was dangerous rested on
+            // wined3d taking wglCreateContextAttribsARB + glGetStringi;
+            // glGetStringi is implemented guest-side now (libgl64.c serves
+            // the curated extension list), and the composed build carrying
+            // this default passes the D3D9/10/11 guest tests (FD-209
+            // record). An explicit BW64_GLVERSION still wins: "3*" selects
+            // 3.2/3.3 as before and any other value keeps the 2.1 profile
+            // available as an opt-down.
             const char* v = getenv("BW64_GLVERSION");
-            if (!v || v[0] != '3') return 21;
+            if (!v) return 33;
+            if (v[0] != '3') return 21;
             if (v[1] == '3') return 33;
             return 32;
         }

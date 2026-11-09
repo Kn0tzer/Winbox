@@ -715,9 +715,11 @@ API void glFlush(void) { (void)gl64_trap(GL64_fn_glFlush,0); }
 API void glFinish(void){ (void)gl64_trap(GL64_fn_glFinish,0); }
 API GLenum glGetError(void){ return (GLenum)gl64_trap(GL64_fn_glGetError,0); }
 // Version mode: ask the host which GL profile to advertise. The host reads
-// BW64_GLVERSION ("3*" -> 32, else 21); cached after the first query. This
-// keeps D3D9-era apps on the proven 2.1 strings while D3D11 experiments opt
-// into 3.2 core via ?glversion=3.2 — without any guest-libc dependency.
+// BW64_GLVERSION ("3*" -> 32/33, any other explicit value -> 21); with no
+// explicit value the host now defaults to 33 (FD-209: at the old 2.1
+// default the Windows loader withheld dozens of implemented entry points
+// from wglGetProcAddress). Cached after the first query — without any
+// guest-libc dependency.
 static int gl_version_mode(void) {
     static int cached = 0; // 0 = unknown, else 21, 32 or 33
     if (!cached) {
@@ -760,7 +762,7 @@ API const GLubyte* glGetString(GLenum name) {
     // (adapter_gl.c lists ARB_SAMPLER_OBJECTS at min GL 3.3), so without it
     // D3D11's requested 11_0 is refused and wined3d_device_create() fails.
     static const GLubyte* exts     = (const GLubyte*)
-        "GL_ARB_multitexture GL_ARB_vertex_buffer_object GL_ARB_texture_non_power_of_two GL_ARB_shader_objects GL_ARB_shading_language_100 GL_ARB_vertex_shader GL_ARB_fragment_shader GL_ARB_sampler_objects GL_ARB_framebuffer_object GL_ARB_uniform_buffer_object GL_ARB_draw_buffers GL_ARB_instanced_arrays GL_ARB_polygon_offset_clamp GL_ARB_draw_buffers_blend GL_ARB_texture_cube_map_array GL_ARB_texture_storage GL_ARB_texture_storage_multisample";
+        "GL_ARB_multitexture GL_ARB_vertex_buffer_object GL_ARB_texture_non_power_of_two GL_ARB_shader_objects GL_ARB_shading_language_100 GL_ARB_vertex_shader GL_ARB_fragment_shader GL_ARB_sampler_objects GL_ARB_framebuffer_object GL_ARB_uniform_buffer_object GL_ARB_draw_buffers GL_ARB_instanced_arrays GL_ARB_polygon_offset_clamp GL_ARB_draw_buffers_blend GL_ARB_texture_cube_map_array GL_ARB_texture_storage GL_ARB_texture_storage_multisample GL_ARB_buffer_storage";
     (void)gl64_trap(GL64_fn_glGetString, 0);
     switch (name) {
         case 0x1F00: return vendor;    // GL_VENDOR
@@ -810,6 +812,10 @@ static const char* const g_extList[] = {
     // ARB_texture_multisample instead of disabling it for "immutable storage
     // is not supported" — verified against adapter_gl.c:3663.
     "GL_ARB_texture_storage","GL_ARB_texture_storage_multisample",
+    // FD-209: buffer_storage is backed by the bridge (immutable storage
+    // emulated with glBufferData; contents identical), and the Windows
+    // loader serves glBufferStorage only when the extension is advertised.
+    "GL_ARB_buffer_storage",
 };
 #define G_EXT_COUNT ((int)(sizeof(g_extList)/sizeof(g_extList[0])))
 
