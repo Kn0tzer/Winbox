@@ -10986,7 +10986,7 @@ do not close the entry until they land.
 
 - **FD-205 — A guest memory fault in some paths is redelivered forever instead of containing the faulting thread. CLOSED 2026-11-08 — see CL-189.** *(High)* Measured 2026-11-07 during the vkcov run phase: a call that faulted on a data read (addr 0x7002a0fa8 at rip 0x700223c5c in the captured run) was delivered past 5.5 million times at the identical rip/addr; the guest thread never died, the session never recovered, and the run had to be stopped from outside. The triggering call was the harness's vkGetDeviceProcAddr stub row — the real loader entry called with no arguments; that row's premise is false and the harness now skips it (and its vkGetInstanceProcAddr pair, on the pair precedent) — but the defect filed here is the emulator-side behaviour the row exposed: unbounded redelivery of a single fault. The same redelivery shape is what makes FD-204 session-fatal. Closing terms: a guest fault that cannot be handled terminates or suspends the faulting thread, or is surfaced as a session failure, instead of redelivering without bound; proven by a faulting guest call after which the session either continues or reports failure. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-vk2-20261107/console.log (preserved on the lane tree).
 
-- **FD-206 — Ten implemented Vulkan handlers answer VK_ERROR_INITIALIZATION_FAILED (-3) to the coverage harness's calls.** *(Medium)* Measured 2026-11-07 on the completed vkcov runs (two independent end-to-end runs with identical return codes): vkSetEvent, vkResetEvent, vkCmdSetEvent, vkCmdResetEvent, vkGetEventStatus (the whole event family), vkGetQueryPoolResults, vkFreeDescriptorSets, vkGetDeviceImageMemoryRequirements, vkGetPhysicalDeviceProperties2KHR, vkGetPhysicalDeviceImageFormatProperties2KHR. The harness's arguments are valid-ish by design (created objects, a begun command buffer, established state); per name, the fixing lane triages handler defect vs harness argument/state artifact, but the event family's uniform -3 across state the harness did establish is a functional failure on its face. Closing terms: each named handler returns a spec-correct result for the harness's call, or the register records the per-name reason its -3 is the correct answer. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-vk4-20261107/vkcov-results.json.
+- **FD-206 — Ten implemented Vulkan handlers answer VK_ERROR_INITIALIZATION_FAILED (-3) to the coverage harness's calls. CLOSED 2026-11-09 — see CL-195.** *(Medium)* Measured 2026-11-07 on the completed vkcov runs (two independent end-to-end runs with identical return codes): vkSetEvent, vkResetEvent, vkCmdSetEvent, vkCmdResetEvent, vkGetEventStatus (the whole event family), vkGetQueryPoolResults, vkFreeDescriptorSets, vkGetDeviceImageMemoryRequirements, vkGetPhysicalDeviceProperties2KHR, vkGetPhysicalDeviceImageFormatProperties2KHR. The harness's arguments are valid-ish by design (created objects, a begun command buffer, established state); per name, the fixing lane triages handler defect vs harness argument/state artifact, but the event family's uniform -3 across state the harness did establish is a functional failure on its face. Closing terms: each named handler returns a spec-correct result for the harness's call, or the register records the per-name reason its -3 is the correct answer. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-vk4-20261107/vkcov-results.json.
 
 - **FD-207 — The GL bridge's multisample-texture error path kills the session with an uncaught ReferenceError. CLOSED 2026-11-08 — see CL-190.** *(High)* In source/opengl/gl64bridge.cpp, the shared case for glTexImage2DMultisample / glTexImage3DMultisample / glTexStorage2DMultisample / glTexStorage3DMultisample wraps the WebGL call in an EM_ASM try/catch whose catch handler references the bare identifier is3D — a C++ variable that is never passed into the JS (the try block correctly uses $0 for the same value). is3D occurs exactly once in the shipped JS and is defined nowhere, so whenever the driver call throws, the catch itself throws ReferenceError: is3D is not defined, uncaught in the page, and the session dies — the exact outcome the case's own comment says the try/catch exists to prevent ("error swallow so a driver that refuses cannot poison wined3d's checks"). Measured 2026-11-07: the glcov run's glTexStorage2DMultisample call threw in the driver, the ReferenceError ended the run at 221 of 334 rows with the session dead. (The glTexImage pair shares the bridge case but never reaches it from the harness — no callable proc; see FD-209.) The harness now skips the two TexStorage rows (recorded -2, crashed). Closing terms: the catch uses the passed-in value (or an equivalent correct reference) so a driver refusal is reported and swallowed as designed; proven by a glcov run with the skips removed, completing with the four names answered. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-gl-20261107/console.log + summary.json (preserved on the lane tree) and docs/reports/vkgl-spec-coverage-20261106.md.
 
@@ -16733,6 +16733,46 @@ its lane and is not a defect, for the stated reason:
   build; new unit test pins the NXDOMAIN refusal and fails on the
   unfixed code. Record:
   `docs/reports/fd265-winsock-dns-nxdomain-20261109.md`.
+- **CL-195 — FD-206 closed.** Fixed on branch
+  `lane-fd206` (commit `00b339523`). All ten
+  named handlers were coverage-harness
+  artifacts, not handler defects: the harness
+  called each of them only from its stub-only
+  section, which invokes the function pointer
+  with no arguments at all, so every
+  implemented handler answered -3 at its
+  argument validation to whatever the
+  registers happened to hold (the register
+  entry's per-name triage is in the lane
+  record). The harness now calls all ten with
+  valid arguments, and four more rows of the
+  same no-argument class are given real calls
+  alongside. Proof: a vkcov coverage run on
+  the fixed build (309 handlers, RESULT 0)
+  records the spec-correct answer for every
+  named handler — VK_SUCCESS for vkSetEvent,
+  vkResetEvent, vkFreeDescriptorSets and
+  vkGetPhysicalDeviceImageFormatProperties2KHR;
+  VK_EVENT_SET (3) for vkGetEventStatus, with
+  VK_EVENT_RESET (4) recorded for the
+  after-reset read in the same console;
+  VK_NOT_READY (1) for a never-executed query
+  and VK_SUCCESS with value 1 for an executed
+  one from vkGetQueryPoolResults; void
+  answers, recorded 0, for vkCmdSetEvent,
+  vkCmdResetEvent,
+  vkGetDeviceImageMemoryRequirements (size
+  written: 16384, the described image's exact
+  byte count) and
+  vkGetPhysicalDeviceProperties2KHR — and no
+  row in the run answers -3 any more.
+  *(Provisional number, filed on lane-fd206,
+  2026-11-09 — CL-194 was taken by lane-fd265
+  while this lane ran; the merge audit
+  settles the final number.)* Record:
+  `docs/reports/fd206-vkcov-real-args-20261109.md`;
+  evidence
+  `test-results/bridge-coverage-fd206-fix3/`.
 - **CL-20 — The native Vulkan bridge test harness
   aborted at the pipeline-cache assertions, so every
   later section never ran (was FD-50).** Fixed in
