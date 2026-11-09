@@ -145,8 +145,19 @@ for an unresolvable name, and that is now met at resolution.
 - Network unit tests: 6 passed / 0 failed on the fixed tree,
   including the new NXDOMAIN test; sabotage run against the unfixed
   `network.mjs`: exactly the new test fails.
-- Checking queue: see the follow-up commit on this branch recording
-  the pipeline verdict on the final tip.
+- Checking queue pipeline 68 on this branch's tip (36c8ac8d4,
+  which adds only the record and register closure over the fix
+  commit): verify-source exact on the tip, tree pristine,
+  read-only mount proven; citations exit 0 (352 rows: 232 MATCH,
+  14 MATCH-INHERITED, 99 UNCHECKABLE, 7 EXEMPT, 0 DRIFT);
+  js-unit 352 passed / 2 failed — exactly the two known
+  bare-checkout artifacts (`provenance-artifacts`,
+  `runtime-completeness`); js-legacy exit 0; native main 706
+  tests 0 failed; native x64 121 tests 0 failed; run-native
+  exit 0. The pipeline's overall "failure" is driven solely by
+  the js-unit step — the standing acceptance shape, identical to
+  pipelines 60, 65, 66 and 67 (logs:
+  `checks/evidence/pipeline-68/queue-logs/`).
 
 ## Register disposition
 
