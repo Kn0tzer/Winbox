@@ -1,0 +1,1432 @@
+log: lazy game: mounting 5798 bytes from http://127.0.0.1:41377/__fixtures/fna-program.zip
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: wine64-launcher: loading 64-bit rootfs from ./
+log: loaded glibc-rootfs32.zip (4133733 bytes) into VFS
+log: loaded prefix32.zip (5978718 bytes) into VFS
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+log: lazy rootfs: wine64.zip will mount on demand (2 field(s))
+log: wine64 argv: ["-root","/root","-zip","bw64url:517564302;http://127.0.0.1:41377/runtime/support-94deeb6b24787be0d6b0d1317e12bc4499ac7680820243ced542593d6bb64e0d.zip|517564302","-zip","glibc-rootfs32.zip","-zip","bw64url:232594442;http://127.0.0.1:41377/runtime/wine32.zip|232594442","-zip","prefix32.zip","-zip","bw64url:5798;http://127.0.0.1:41377/__fixtures/fna-program.zip|5798","-w","/home/username/apps/","-env","HOME=/home/username","-env","WINEPREFIX=/home/username/.wine","-env","WINESERVER=/usr/lib/wine/wineserver32","-env","WINEDLLPATH=/opt/wine-stable/lib/wine","-env","WINE_D3D_CONFIG=csmt=0x0","-env","WINELOADERNOEXEC=1","-env","XDG_RUNTIME_DIR=/tmp","-env","WINEDEBUG=+debugstr","-env","WINEDATADIR=/opt/wine-stable/share/wine","-env","TMPDIR=/home/username/tmp","/opt/wine-stable/bin/wine","Z:\\home\\username\\apps\\fna-runtime.exe"]
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: Starting ...
+log: Command line arguments: "./this.program" "-root" "/root" "-zip" "bw64url:517564302;http://127.0.0.1:41377/runtime/support-94deeb6b24787be0d6b0d1317e12bc4499ac7680820243ced542593d6bb64e0d.zip|517564302" "-zip" "glibc-rootfs32.zip" "-zip" "bw64url:232594442;http://127.0.0.1:41377/runtime/wine32.zip|232594442" "-zip" "prefix32.zip" "-zip" "bw64url:5798;http://127.0.0.1:41377/__fixtures/fna-program.zip|5798" "-w" "/home/username/apps/" "-env" "HOME=/home/username" "-env" "WINEPREFIX=/home/username/.wine" "-env" "WINESERVER=/usr/lib/wine/wineserver32" "-env" "WINEDLLPATH=/opt/wine-stable/lib/wine" "-env" "WINE_D3D_CONFIG=csmt=0x0" "-env" "WINELOADERNOEXEC=1" "-env" "XDG_RUNTIME_DIR=/tmp" "-env" "WINEDEBUG=+debugstr" "-env" "WINEDATADIR=/opt/wine-stable/share/wine" "-env" "TMPDIR=/home/username/tmp" "/opt/wine-stable/bin/wine" "Z:\home\username\apps\fna-runtime.exe"
+log: Using root directory: /root
+log: Using zip file system: bw64url:517564302;http://127.0.0.1:41377/runtime/support-94deeb6b24787be0d6b0d1317e12bc4499ac7680820243ced542593d6bb64e0d.zip|517564302
+log: Using zip file system: glibc-rootfs32.zip
+log: Using zip file system: bw64url:232594442;http://127.0.0.1:41377/runtime/wine32.zip|232594442
+log: Using zip file system: prefix32.zip
+log: Using zip file system: bw64url:5798;http://127.0.0.1:41377/__fixtures/fna-program.zip|5798
+log: Created root directory: /root
+log: fszipurl: mounted 493 MB zip lazily (1 part(s), 2MB blocks)
+log: Loaded bw64url:517564302;http://127.0.0.1:41377/runtime/support-94deeb6b24787be0d6b0d1317e12bc4499ac7680820243ced542593d6bb64e0d.zip|517564302 in 1202 ms
+log: Loaded glibc-rootfs32.zip in 104 ms
+log: fszipurl: mounted 221 MB zip lazily (1 part(s), 2MB blocks)
+log: Loaded bw64url:232594442;http://127.0.0.1:41377/runtime/wine32.zip|232594442 in 412 ms
+log: Loaded prefix32.zip in 29 ms
+log: fszipurl: mounted 0 MB zip lazily (1 part(s), 2MB blocks)
+log: Loaded bw64url:5798;http://127.0.0.1:41377/__fixtures/fna-program.zip|5798 in 9 ms
+log: Launching "/opt/wine-stable/bin/wine" "Z:\home\username\apps\fna-runtime.exe" 
+log: loadProgram: PT_INTERP '/lib/ld-linux.so.2', loading dynamic linker
+log: loadProgram: interpreter mapped at 0xb0000000, entry 0xb001abd0
+log: setupThreadStack32: argc=2 envc=18 prog=wine
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FEDD0
+log: wine64session: context captured (cwd=/home/username/apps/ uid=1 bootPid=10)
+log: loadProgram: PT_INTERP '/lib/ld-linux.so.2', loading dynamic linker
+log: loadProgram: interpreter mapped at 0xb0000000, entry 0xb001abd0
+log: setupThreadStack32: argc=1 envc=19 prog=wineserver32
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FEDC8
+log: BW64-DIAG pair enter pid=14 tid=15 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=14 tid=15
+log: BW64-DIAG pair s1 pid=14 tid=15 fd=3
+log: BW64-DIAG pair s2 pid=14 tid=15 fd=4
+log: BW64-DIAG pair wired pid=14 tid=15 fd1=3 fd2=4
+log: BW64-DIAG pair enter pid=14 tid=15 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=14 tid=15
+log: BW64-DIAG pair s1 pid=14 tid=15 fd=6
+log: BW64-DIAG pair s2 pid=14 tid=15 fd=7
+log: BW64-DIAG pair wired pid=14 tid=15 fd1=6 fd2=7
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=3
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=7
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=3 fd2=7
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=10
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=11
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=10 fd2=11
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=12
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=13
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=12 fd2=13
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=14
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=15
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=14 fd2=15
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=16
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=17
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=16 fd2=17
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=22
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=23
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=22 fd2=23
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=6
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=7
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=6 fd2=7
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=8
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=9
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=8 fd2=9
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/wineboot.exe' -> fd 26
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=7
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=11
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=7 fd2=11
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=28
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=29
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=28 fd2=29
+log: setupThreadStack32: argc=4 envc=21 prog=wine-preloader
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FED3C
+log: BW64-DIAG pair enter pid=20 tid=21 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=20 tid=21
+log: BW64-DIAG pair s1 pid=20 tid=21 fd=4
+log: BW64-DIAG pair s2 pid=20 tid=21 fd=5
+log: BW64-DIAG pair wired pid=20 tid=21 fd1=4 fd2=5
+log: BW64-DIAG pair enter pid=20 tid=21 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=20 tid=21
+log: BW64-DIAG pair s1 pid=20 tid=21 fd=6
+log: BW64-DIAG pair s2 pid=20 tid=21 fd=8
+log: BW64-DIAG pair wired pid=20 tid=21 fd1=6 fd2=8
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/wineboot.exe' -> fd 31
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/wineboot.exe' -> fd 31
+log: fszipurl: 17 MB fetched lazily so far
+log: 002c:fixme:actctx:parse_depend_manifests Could not find dependent assembly L"Microsoft.Windows.Common-Controls" (6.0.0.0)
+log: fszipurl: 33 MB fetched lazily so far
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/services.exe' -> fd 26
+log: BW64-DIAG pair enter pid=20 tid=21 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=20 tid=21
+log: BW64-DIAG pair s1 pid=20 tid=21 fd=5
+log: BW64-DIAG pair s2 pid=20 tid=21 fd=12
+log: BW64-DIAG pair wired pid=20 tid=21 fd1=5 fd2=12
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=49
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=50
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=49 fd2=50
+log: setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FED44
+log: BW64-DIAG pair enter pid=24 tid=25 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=25
+log: BW64-DIAG pair s1 pid=24 tid=25 fd=4
+log: BW64-DIAG pair s2 pid=24 tid=25 fd=6
+log: BW64-DIAG pair wired pid=24 tid=25 fd1=4 fd2=6
+log: BW64-DIAG pair enter pid=24 tid=25 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=25
+log: BW64-DIAG pair s1 pid=24 tid=25 fd=7
+log: BW64-DIAG pair s2 pid=24 tid=25 fd=8
+log: BW64-DIAG pair wired pid=24 tid=25 fd1=7 fd2=8
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/services.exe' -> fd 52
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/services.exe' -> fd 52
+log: BW64-DIAG pair enter pid=24 tid=25 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=25
+log: BW64-DIAG pair s1 pid=24 tid=25 fd=9
+log: BW64-DIAG pair s2 pid=24 tid=25 fd=10
+log: BW64-DIAG pair wired pid=24 tid=25 fd1=9 fd2=10
+log: BW64-DIAG pair enter pid=24 tid=26 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=26
+log: BW64-DIAG pair s1 pid=24 tid=26 fd=9
+log: BW64-DIAG pair s2 pid=24 tid=26 fd=11
+log: BW64-DIAG pair wired pid=24 tid=26 fd1=9 fd2=11
+log: BW64-DIAG pair enter pid=24 tid=26 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=26
+log: BW64-DIAG pair s1 pid=24 tid=26 fd=12
+log: BW64-DIAG pair s2 pid=24 tid=26 fd=13
+log: BW64-DIAG pair wired pid=24 tid=26 fd1=12 fd2=13
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 59
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 59
+log: BW64-DIAG pair enter pid=24 tid=25 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=24 tid=25
+log: BW64-DIAG pair s1 pid=24 tid=25 fd=11
+log: BW64-DIAG pair s2 pid=24 tid=25 fd=15
+log: BW64-DIAG pair wired pid=24 tid=25 fd1=11 fd2=15
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=61
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=62
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=61 fd2=62
+log: setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FED44
+log: FsZip: 64 entry streams opened, 13 MB decompressed, 7 MB served from cache, 0 backward reopens
+log: BW64-DIAG pair enter pid=29 tid=30 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=30
+log: BW64-DIAG pair s1 pid=29 tid=30 fd=4
+log: BW64-DIAG pair s2 pid=29 tid=30 fd=5
+log: BW64-DIAG pair wired pid=29 tid=30 fd1=4 fd2=5
+log: BW64-DIAG pair enter pid=29 tid=30 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=30
+log: BW64-DIAG pair s1 pid=29 tid=30 fd=6
+log: BW64-DIAG pair s2 pid=29 tid=30 fd=7
+log: BW64-DIAG pair wired pid=29 tid=30 fd1=6 fd2=7
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 64
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/winedevice.exe' -> fd 64
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/ntoskrnl.exe' -> fd 64
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/ntoskrnl.exe' -> fd 64
+log: fszipurl: 49 MB fetched lazily so far
+log: BW64-DIAG pair enter pid=24 tid=26 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=26
+log: BW64-DIAG pair s1 pid=24 tid=26 fd=11
+log: BW64-DIAG pair s2 pid=24 tid=26 fd=14
+log: BW64-DIAG pair wired pid=24 tid=26 fd1=11 fd2=14
+log: BW64-DIAG pair enter pid=24 tid=31 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=31
+log: BW64-DIAG pair s1 pid=24 tid=31 fd=11
+log: BW64-DIAG pair s2 pid=24 tid=31 fd=15
+log: BW64-DIAG pair wired pid=24 tid=31 fd1=11 fd2=15
+log: BW64-DIAG pair enter pid=24 tid=31 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=31
+log: BW64-DIAG pair s1 pid=24 tid=31 fd=16
+log: BW64-DIAG pair s2 pid=24 tid=31 fd=17
+log: BW64-DIAG pair wired pid=24 tid=31 fd1=16 fd2=17
+log: BW64-DIAG pair enter pid=24 tid=31 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=31
+log: BW64-DIAG pair s1 pid=24 tid=31 fd=15
+log: BW64-DIAG pair s2 pid=24 tid=31 fd=18
+log: BW64-DIAG pair wired pid=24 tid=31 fd1=15 fd2=18
+log: BW64-DIAG pair enter pid=24 tid=32 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=32
+log: BW64-DIAG pair s1 pid=24 tid=32 fd=15
+log: BW64-DIAG pair s2 pid=24 tid=32 fd=19
+log: BW64-DIAG pair wired pid=24 tid=32 fd1=15 fd2=19
+log: BW64-DIAG pair enter pid=24 tid=32 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=32
+log: BW64-DIAG pair s1 pid=24 tid=32 fd=20
+log: BW64-DIAG pair s2 pid=24 tid=32 fd=21
+log: BW64-DIAG pair wired pid=24 tid=32 fd1=20 fd2=21
+log: BW64-DIAG pair enter pid=29 tid=30 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=30
+log: BW64-DIAG pair s1 pid=29 tid=30 fd=8
+log: BW64-DIAG pair s2 pid=29 tid=30 fd=9
+log: BW64-DIAG pair wired pid=29 tid=30 fd1=8 fd2=9
+log: BW64-DIAG pair enter pid=29 tid=33 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=33
+log: BW64-DIAG pair s1 pid=29 tid=33 fd=8
+log: BW64-DIAG pair s2 pid=29 tid=33 fd=10
+log: BW64-DIAG pair wired pid=29 tid=33 fd1=8 fd2=10
+log: BW64-DIAG pair enter pid=29 tid=33 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=33
+log: BW64-DIAG pair s1 pid=29 tid=33 fd=12
+log: BW64-DIAG pair s2 pid=29 tid=33 fd=13
+log: BW64-DIAG pair wired pid=29 tid=33 fd1=12 fd2=13
+log: BW64-DIAG pair enter pid=29 tid=33 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=33
+log: BW64-DIAG pair s1 pid=29 tid=33 fd=10
+log: BW64-DIAG pair s2 pid=29 tid=33 fd=14
+log: BW64-DIAG pair wired pid=29 tid=33 fd1=10 fd2=14
+log: BW64-DIAG pair enter pid=29 tid=34 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=34
+log: BW64-DIAG pair s1 pid=29 tid=34 fd=10
+log: BW64-DIAG pair s2 pid=29 tid=34 fd=15
+log: BW64-DIAG pair wired pid=29 tid=34 fd1=10 fd2=15
+log: BW64-DIAG pair enter pid=29 tid=34 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=34
+log: BW64-DIAG pair s1 pid=29 tid=34 fd=16
+log: BW64-DIAG pair s2 pid=29 tid=34 fd=17
+log: BW64-DIAG pair wired pid=29 tid=34 fd1=16 fd2=17
+log: BW64-DIAG pair enter pid=29 tid=34 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=34
+log: BW64-DIAG pair s1 pid=29 tid=34 fd=15
+log: BW64-DIAG pair s2 pid=29 tid=34 fd=18
+log: BW64-DIAG pair wired pid=29 tid=34 fd1=15 fd2=18
+log: BW64-DIAG pair enter pid=29 tid=35 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=35
+log: BW64-DIAG pair s1 pid=29 tid=35 fd=15
+log: BW64-DIAG pair s2 pid=29 tid=35 fd=19
+log: BW64-DIAG pair wired pid=29 tid=35 fd1=15 fd2=19
+log: BW64-DIAG pair enter pid=29 tid=35 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=35
+log: BW64-DIAG pair s1 pid=29 tid=35 fd=20
+log: BW64-DIAG pair s2 pid=29 tid=35 fd=21
+log: BW64-DIAG pair wired pid=29 tid=35 fd1=20 fd2=21
+log: BW64-DIAG pair enter pid=29 tid=33 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=33
+log: BW64-DIAG pair s1 pid=29 tid=33 fd=19
+log: BW64-DIAG pair s2 pid=29 tid=33 fd=22
+log: BW64-DIAG pair wired pid=29 tid=33 fd1=19 fd2=22
+log: BW64-DIAG pair enter pid=29 tid=33 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=33
+log: BW64-DIAG pair s1 pid=29 tid=33 fd=19
+log: BW64-DIAG pair s2 pid=29 tid=33 fd=23
+log: BW64-DIAG pair wired pid=29 tid=33 fd1=19 fd2=23
+log: BW64-DIAG pair enter pid=29 tid=36 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=36
+log: BW64-DIAG pair s1 pid=29 tid=36 fd=24
+log: BW64-DIAG pair s2 pid=29 tid=36 fd=25
+log: BW64-DIAG pair wired pid=29 tid=36 fd1=24 fd2=25
+log: BW64-DIAG pair enter pid=29 tid=36 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=36
+log: BW64-DIAG pair s1 pid=29 tid=36 fd=19
+log: BW64-DIAG pair enter pid=29 tid=37 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair s2 pid=29 tid=36 fd=26
+log: BW64-DIAG pair wired pid=29 tid=36 fd1=19 fd2=26
+log: BW64-DIAG pair lock-busy pid=29 tid=37
+log: BW64-DIAG pair locked pid=29 tid=37
+log: BW64-DIAG pair s1 pid=29 tid=37 fd=25
+log: BW64-DIAG pair s2 pid=29 tid=37 fd=27
+log: BW64-DIAG pair wired pid=29 tid=37 fd1=25 fd2=27
+log: BW64-DIAG pair enter pid=29 tid=37 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=37
+log: BW64-DIAG pair s1 pid=29 tid=37 fd=28
+log: BW64-DIAG pair s2 pid=29 tid=37 fd=29
+log: BW64-DIAG pair wired pid=29 tid=37 fd1=28 fd2=29
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/plugplay.exe' -> fd 89
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/plugplay.exe' -> fd 89
+log: BW64-DIAG pair enter pid=24 tid=25 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=24 tid=25
+log: BW64-DIAG pair s1 pid=24 tid=25 fd=19
+log: BW64-DIAG pair s2 pid=24 tid=25 fd=23
+log: BW64-DIAG pair wired pid=24 tid=25 fd1=19 fd2=23
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=91
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=92
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=91 fd2=92
+log: setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FED44
+log: BW64-DIAG pair enter pid=40 tid=41 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=41
+log: BW64-DIAG pair s1 pid=40 tid=41 fd=4
+log: BW64-DIAG pair s2 pid=40 tid=41 fd=5
+log: BW64-DIAG pair wired pid=40 tid=41 fd1=4 fd2=5
+log: BW64-DIAG pair enter pid=40 tid=41 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=41
+log: BW64-DIAG pair s1 pid=40 tid=41 fd=6
+log: BW64-DIAG pair s2 pid=40 tid=41 fd=7
+log: BW64-DIAG pair wired pid=40 tid=41 fd1=6 fd2=7
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/plugplay.exe' -> fd 88
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/plugplay.exe' -> fd 88
+log: fszipurl: 65 MB fetched lazily so far
+log: BW64-INFO hard-link from=/root/tmp/fontconfig/CACHEDIR.TAG.TMP-WAM2T3 to=/tmp/fontconfig/CACHEDIR.TAG.LCK outcome=served by shared backing path (backing store cannot hard-link) count=1
+log: BW64-INFO hard-link from=/root/tmp/fontconfig/3830d5c3ddfd5cd38a049b759396e72e-le32d4.cache-8.TMP-cvGWtY to=/tmp/fontconfig//3830d5c3ddfd5cd38a049b759396e72e-le32d4.cache-8.LCK outcome=served by shared backing path (backing store cannot hard-link) count=2
+log: BW64-INFO hard-link from=/root/tmp/fontconfig/7ef2298fde41cc6eeb7af42e48b7d293-le32d4.cache-8.TMP-OqSAEY to=/tmp/fontconfig//7ef2298fde41cc6eeb7af42e48b7d293-le32d4.cache-8.LCK outcome=served by shared backing path (backing store cannot hard-link) count=3
+log: BW64-INFO hard-link from=/root/tmp/fontconfig/d589a48862398ed80a3d6066f4f56f4c-le32d4.cache-8.TMP-czYqJm to=/tmp/fontconfig//d589a48862398ed80a3d6066f4f56f4c-le32d4.cache-8.LCK outcome=served by shared backing path (backing store cannot hard-link) count=4
+log: BW64-INFO hard-link from=/root/tmp/fontconfig/99e8ed0e538f840c565b6ed5dad60d56-le32d4.cache-8.TMP-GS29b2 to=/tmp/fontconfig//99e8ed0e538f840c565b6ed5dad60d56-le32d4.cache-8.LCK outcome=served by shared backing path (backing store cannot hard-link) count=5
+log: BW64-DIAG pair enter pid=24 tid=26 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=26
+log: BW64-DIAG pair s1 pid=24 tid=26 fd=19
+log: BW64-DIAG pair s2 pid=24 tid=26 fd=22
+log: BW64-DIAG pair wired pid=24 tid=26 fd1=19 fd2=22
+log: BW64-DIAG pair enter pid=24 tid=42 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=42
+log: BW64-DIAG pair s1 pid=24 tid=42 fd=19
+log: BW64-DIAG pair s2 pid=24 tid=42 fd=23
+log: BW64-DIAG pair wired pid=24 tid=42 fd1=19 fd2=23
+log: BW64-DIAG pair enter pid=24 tid=42 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=42
+log: BW64-DIAG pair s1 pid=24 tid=42 fd=24
+log: BW64-DIAG pair s2 pid=24 tid=42 fd=25
+log: BW64-DIAG pair wired pid=24 tid=42 fd1=24 fd2=25
+log: BW64-DIAG pair enter pid=40 tid=41 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=41
+log: BW64-DIAG pair s1 pid=40 tid=41 fd=8
+log: BW64-DIAG pair s2 pid=40 tid=41 fd=9
+log: BW64-DIAG pair wired pid=40 tid=41 fd1=8 fd2=9
+log: BW64-DIAG pair enter pid=40 tid=43 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=43
+log: BW64-DIAG pair s1 pid=40 tid=43 fd=8
+log: BW64-DIAG pair s2 pid=40 tid=43 fd=10
+log: BW64-DIAG pair wired pid=40 tid=43 fd1=8 fd2=10
+log: BW64-DIAG pair enter pid=40 tid=43 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=43
+log: BW64-DIAG pair s1 pid=40 tid=43 fd=11
+log: BW64-DIAG pair s2 pid=40 tid=43 fd=12
+log: BW64-DIAG pair wired pid=40 tid=43 fd1=11 fd2=12
+log: BW64-DIAG pair enter pid=40 tid=43 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=43
+log: BW64-DIAG pair s1 pid=40 tid=43 fd=10
+log: BW64-DIAG pair s2 pid=40 tid=43 fd=13
+log: BW64-DIAG pair wired pid=40 tid=43 fd1=10 fd2=13
+log: BW64-DIAG pair enter pid=40 tid=44 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=44
+log: BW64-DIAG pair s1 pid=40 tid=44 fd=10
+log: BW64-DIAG pair s2 pid=40 tid=44 fd=14
+log: BW64-DIAG pair wired pid=40 tid=44 fd1=10 fd2=14
+log: BW64-DIAG pair enter pid=40 tid=44 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=44
+log: BW64-DIAG pair s1 pid=40 tid=44 fd=15
+log: BW64-DIAG pair s2 pid=40 tid=44 fd=16
+log: BW64-DIAG pair wired pid=40 tid=44 fd1=15 fd2=16
+log: BW64-DIAG pair enter pid=40 tid=44 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=44
+log: BW64-DIAG pair s1 pid=40 tid=44 fd=14
+log: BW64-DIAG pair s2 pid=40 tid=44 fd=17
+log: BW64-DIAG pair wired pid=40 tid=44 fd1=14 fd2=17
+log: BW64-DIAG pair enter pid=40 tid=45 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=45
+log: BW64-DIAG pair s1 pid=40 tid=45 fd=14
+log: BW64-DIAG pair s2 pid=40 tid=45 fd=18
+log: BW64-DIAG pair wired pid=40 tid=45 fd1=14 fd2=18
+log: BW64-DIAG pair enter pid=40 tid=45 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=45
+log: BW64-DIAG pair s1 pid=40 tid=45 fd=20
+log: BW64-DIAG pair s2 pid=40 tid=45 fd=21
+log: BW64-DIAG pair wired pid=40 tid=45 fd1=20 fd2=21
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/svchost.exe' -> fd 109
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/svchost.exe' -> fd 109
+log: BW64-DIAG pair enter pid=24 tid=25 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=24 tid=25
+log: BW64-DIAG pair s1 pid=24 tid=25 fd=23
+log: BW64-DIAG pair s2 pid=24 tid=25 fd=27
+log: BW64-DIAG pair wired pid=24 tid=25 fd1=23 fd2=27
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=111
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=112
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=111 fd2=112
+log: setupThreadStack32: argc=5 envc=21 prog=wine-preloader
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FED24
+log: BW64-DIAG pair enter pid=48 tid=49 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=48 tid=49
+log: BW64-DIAG pair s1 pid=48 tid=49 fd=4
+log: BW64-DIAG pair s2 pid=48 tid=49 fd=5
+log: BW64-DIAG pair wired pid=48 tid=49 fd1=4 fd2=5
+log: BW64-DIAG pair enter pid=48 tid=49 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=48 tid=49
+log: BW64-DIAG pair s1 pid=48 tid=49 fd=6
+log: BW64-DIAG pair s2 pid=48 tid=49 fd=7
+log: BW64-DIAG pair wired pid=48 tid=49 fd1=6 fd2=7
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/svchost.exe' -> fd 114
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/svchost.exe' -> fd 114
+log: BW64-DIAG pair enter pid=24 tid=26 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=26
+log: BW64-DIAG pair s1 pid=24 tid=26 fd=23
+log: BW64-DIAG pair s2 pid=24 tid=26 fd=26
+log: BW64-DIAG pair wired pid=24 tid=26 fd1=23 fd2=26
+log: BW64-DIAG pair enter pid=24 tid=50 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=50
+log: BW64-DIAG pair s1 pid=24 tid=50 fd=23
+log: BW64-DIAG pair s2 pid=24 tid=50 fd=27
+log: BW64-DIAG pair wired pid=24 tid=50 fd1=23 fd2=27
+log: BW64-DIAG pair enter pid=24 tid=50 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=50
+log: BW64-DIAG pair s1 pid=24 tid=50 fd=28
+log: BW64-DIAG pair s2 pid=24 tid=50 fd=29
+log: BW64-DIAG pair wired pid=24 tid=50 fd1=28 fd2=29
+log: BW64-DIAG pair enter pid=48 tid=49 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=48 tid=49
+log: BW64-DIAG pair s1 pid=48 tid=49 fd=8
+log: BW64-DIAG pair s2 pid=48 tid=49 fd=9
+log: BW64-DIAG pair wired pid=48 tid=49 fd1=8 fd2=9
+log: BW64-DIAG pair enter pid=48 tid=51 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=48 tid=51
+log: BW64-DIAG pair s1 pid=48 tid=51 fd=8
+log: BW64-DIAG pair s2 pid=48 tid=51 fd=10
+log: BW64-DIAG pair wired pid=48 tid=51 fd1=8 fd2=10
+log: BW64-DIAG pair enter pid=48 tid=51 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=48 tid=51
+log: BW64-DIAG pair s1 pid=48 tid=51 fd=11
+log: BW64-DIAG pair s2 pid=48 tid=51 fd=12
+log: BW64-DIAG pair wired pid=48 tid=51 fd1=11 fd2=12
+log: BW64-DIAG pair enter pid=48 tid=51 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=48 tid=51
+log: BW64-DIAG pair s1 pid=48 tid=51 fd=10
+log: BW64-DIAG pair s2 pid=48 tid=51 fd=13
+log: BW64-DIAG pair wired pid=48 tid=51 fd1=10 fd2=13
+log: BW64-DIAG pair enter pid=48 tid=52 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=48 tid=52
+log: BW64-DIAG pair s1 pid=48 tid=52 fd=10
+log: BW64-DIAG pair s2 pid=48 tid=52 fd=14
+log: BW64-DIAG pair wired pid=48 tid=52 fd1=10 fd2=14
+log: BW64-DIAG pair enter pid=48 tid=52 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=48 tid=52
+log: BW64-DIAG pair s1 pid=48 tid=52 fd=15
+log: BW64-DIAG pair s2 pid=48 tid=52 fd=16
+log: BW64-DIAG pair wired pid=48 tid=52 fd1=15 fd2=16
+log: BW64-DIAG pair enter pid=29 tid=33 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=33
+log: BW64-DIAG pair s1 pid=29 tid=33 fd=23
+log: BW64-DIAG pair s2 pid=29 tid=33 fd=25
+log: BW64-DIAG pair wired pid=29 tid=33 fd1=23 fd2=25
+log: BW64-DIAG pair enter pid=29 tid=33 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=33
+log: BW64-DIAG pair s1 pid=29 tid=33 fd=23
+log: BW64-DIAG pair s2 pid=29 tid=33 fd=27
+log: BW64-DIAG pair enter pid=29 tid=53 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair lock-busy pid=29 tid=53
+log: BW64-DIAG pair wired pid=29 tid=33 fd1=23 fd2=27
+log: BW64-DIAG pair locked pid=29 tid=53
+log: BW64-DIAG pair s1 pid=29 tid=53 fd=28
+log: BW64-DIAG pair s2 pid=29 tid=53 fd=29
+log: BW64-DIAG pair wired pid=29 tid=53 fd1=28 fd2=29
+log: BW64-DIAG pair enter pid=29 tid=53 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=53
+log: BW64-DIAG pair s1 pid=29 tid=53 fd=23
+log: BW64-DIAG pair s2 pid=29 tid=53 fd=30
+log: BW64-DIAG pair wired pid=29 tid=53 fd1=23 fd2=30
+log: BW64-DIAG pair enter pid=29 tid=54 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=54
+log: BW64-DIAG pair s1 pid=29 tid=54 fd=29
+log: BW64-DIAG pair s2 pid=29 tid=54 fd=31
+log: BW64-DIAG pair wired pid=29 tid=54 fd1=29 fd2=31
+log: BW64-DIAG pair enter pid=29 tid=54 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=29 tid=54
+log: BW64-DIAG pair s1 pid=29 tid=54 fd=32
+log: BW64-DIAG pair s2 pid=29 tid=54 fd=33
+log: BW64-DIAG pair wired pid=29 tid=54 fd1=32 fd2=33
+log: FsZip: 128 entry streams opened, 26 MB decompressed, 12 MB served from cache, 0 backward reopens
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 132
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 132
+log: BW64-DIAG pair enter pid=24 tid=25 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=24 tid=25
+log: BW64-DIAG pair s1 pid=24 tid=25 fd=27
+log: BW64-DIAG pair s2 pid=24 tid=25 fd=31
+log: BW64-DIAG pair wired pid=24 tid=25 fd1=27 fd2=31
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=138
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=139
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=138 fd2=139
+log: setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FED44
+log: BW64-DIAG pair enter pid=57 tid=58 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=58
+log: BW64-DIAG pair s1 pid=57 tid=58 fd=4
+log: BW64-DIAG pair s2 pid=57 tid=58 fd=5
+log: BW64-DIAG pair wired pid=57 tid=58 fd1=4 fd2=5
+log: BW64-DIAG pair enter pid=57 tid=58 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=58
+log: BW64-DIAG pair s1 pid=57 tid=58 fd=6
+log: BW64-DIAG pair s2 pid=57 tid=58 fd=7
+log: BW64-DIAG pair wired pid=57 tid=58 fd1=6 fd2=7
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 141
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/winedevice.exe' -> fd 141
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/ntoskrnl.exe' -> fd 141
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/ntoskrnl.exe' -> fd 141
+log: BW64-DIAG pair enter pid=24 tid=26 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=26
+log: BW64-DIAG pair s1 pid=24 tid=26 fd=27
+log: BW64-DIAG pair s2 pid=24 tid=26 fd=30
+log: BW64-DIAG pair wired pid=24 tid=26 fd1=27 fd2=30
+log: BW64-DIAG pair enter pid=24 tid=59 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=59
+log: BW64-DIAG pair s1 pid=24 tid=59 fd=27
+log: BW64-DIAG pair s2 pid=24 tid=59 fd=31
+log: BW64-DIAG pair wired pid=24 tid=59 fd1=27 fd2=31
+log: BW64-DIAG pair enter pid=24 tid=59 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=59
+log: BW64-DIAG pair s1 pid=24 tid=59 fd=32
+log: BW64-DIAG pair s2 pid=24 tid=59 fd=33
+log: BW64-DIAG pair wired pid=24 tid=59 fd1=32 fd2=33
+log: BW64-DIAG pair enter pid=57 tid=58 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=58
+log: BW64-DIAG pair s1 pid=57 tid=58 fd=8
+log: BW64-DIAG pair s2 pid=57 tid=58 fd=9
+log: BW64-DIAG pair wired pid=57 tid=58 fd1=8 fd2=9
+log: BW64-DIAG pair enter pid=57 tid=60 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=60
+log: BW64-DIAG pair s1 pid=57 tid=60 fd=8
+log: BW64-DIAG pair s2 pid=57 tid=60 fd=10
+log: BW64-DIAG pair wired pid=57 tid=60 fd1=8 fd2=10
+log: BW64-DIAG pair enter pid=57 tid=60 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=60
+log: BW64-DIAG pair s1 pid=57 tid=60 fd=11
+log: BW64-DIAG pair s2 pid=57 tid=60 fd=12
+log: BW64-DIAG pair wired pid=57 tid=60 fd1=11 fd2=12
+log: BW64-DIAG pair enter pid=57 tid=60 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=60
+log: BW64-DIAG pair s1 pid=57 tid=60 fd=10
+log: BW64-DIAG pair s2 pid=57 tid=60 fd=13
+log: BW64-DIAG pair wired pid=57 tid=60 fd1=10 fd2=13
+log: BW64-DIAG pair enter pid=57 tid=61 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=61
+log: BW64-DIAG pair s1 pid=57 tid=61 fd=10
+log: BW64-DIAG pair s2 pid=57 tid=61 fd=14
+log: BW64-DIAG pair wired pid=57 tid=61 fd1=10 fd2=14
+log: BW64-DIAG pair enter pid=57 tid=61 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=61
+log: BW64-DIAG pair s1 pid=57 tid=61 fd=15
+log: BW64-DIAG pair s2 pid=57 tid=61 fd=16
+log: BW64-DIAG pair wired pid=57 tid=61 fd1=15 fd2=16
+log: BW64-DIAG pair enter pid=57 tid=61 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=61
+log: BW64-DIAG pair s1 pid=57 tid=61 fd=14
+log: BW64-DIAG pair s2 pid=57 tid=61 fd=17
+log: BW64-DIAG pair wired pid=57 tid=61 fd1=14 fd2=17
+log: BW64-DIAG pair enter pid=57 tid=62 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=62
+log: BW64-DIAG pair s1 pid=57 tid=62 fd=14
+log: BW64-DIAG pair s2 pid=57 tid=62 fd=18
+log: BW64-DIAG pair wired pid=57 tid=62 fd1=14 fd2=18
+log: BW64-DIAG pair enter pid=57 tid=62 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=62
+log: BW64-DIAG pair s1 pid=57 tid=62 fd=19
+log: BW64-DIAG pair s2 pid=57 tid=62 fd=20
+log: BW64-DIAG pair wired pid=57 tid=62 fd1=19 fd2=20
+log: BW64-DIAG pair enter pid=57 tid=60 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=60
+log: BW64-DIAG pair s1 pid=57 tid=60 fd=18
+log: BW64-DIAG pair s2 pid=57 tid=60 fd=21
+log: BW64-DIAG pair wired pid=57 tid=60 fd1=18 fd2=21
+log: BW64-DIAG pair enter pid=57 tid=63 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=63
+log: BW64-DIAG pair s1 pid=57 tid=63 fd=18
+log: BW64-DIAG pair s2 pid=57 tid=63 fd=22
+log: BW64-DIAG pair wired pid=57 tid=63 fd1=18 fd2=22
+log: BW64-DIAG pair enter pid=57 tid=63 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=63
+log: BW64-DIAG pair s1 pid=57 tid=63 fd=23
+log: BW64-DIAG pair s2 pid=57 tid=63 fd=24
+log: BW64-DIAG pair wired pid=57 tid=63 fd1=23 fd2=24
+log: BW64-FAIL netlink-recvfrom flags=0x22 outcome=returned-EINVAL
+log: fszipurl: 81 MB fetched lazily so far
+log: BW64-DIAG pair enter pid=57 tid=60 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=60
+log: BW64-DIAG pair s1 pid=57 tid=60 fd=29
+log: BW64-DIAG pair s2 pid=57 tid=60 fd=30
+log: BW64-DIAG pair wired pid=57 tid=60 fd1=29 fd2=30
+log: BW64-DIAG pair enter pid=57 tid=65 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=65
+log: BW64-DIAG pair s1 pid=57 tid=65 fd=29
+log: BW64-DIAG pair s2 pid=57 tid=65 fd=31
+log: BW64-DIAG pair wired pid=57 tid=65 fd1=29 fd2=31
+log: BW64-DIAG pair enter pid=57 tid=65 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=65
+log: BW64-DIAG pair s1 pid=57 tid=65 fd=32
+log: BW64-DIAG pair s2 pid=57 tid=65 fd=33
+log: BW64-DIAG pair wired pid=57 tid=65 fd1=32 fd2=33
+log: BW64-DIAG pair enter pid=57 tid=60 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=60
+log: BW64-DIAG pair s1 pid=57 tid=60 fd=30
+log: BW64-DIAG pair s2 pid=57 tid=60 fd=32
+log: BW64-DIAG pair wired pid=57 tid=60 fd1=30 fd2=32
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=57 tid=66 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=66
+log: BW64-DIAG pair s1 pid=57 tid=66 fd=29
+log: BW64-DIAG pair s2 pid=57 tid=66 fd=30
+log: BW64-DIAG pair wired pid=57 tid=66 fd1=29 fd2=30
+log: BW64-DIAG pair enter pid=57 tid=66 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=66
+log: BW64-DIAG pair s1 pid=57 tid=66 fd=31
+log: BW64-DIAG pair s2 pid=57 tid=66 fd=33
+log: BW64-DIAG pair wired pid=57 tid=66 fd1=31 fd2=33
+log: 00a8:err:setupapi:do_file_copyW Unsupported style(s) 0x10
+log: BW64-DIAG pair enter pid=57 tid=66 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=57 tid=66
+log: BW64-DIAG pair s1 pid=57 tid=66 fd=30
+log: BW64-DIAG pair s2 pid=57 tid=66 fd=34
+log: BW64-DIAG pair wired pid=57 tid=66 fd1=30 fd2=34
+log: BW64-DIAG pair enter pid=57 tid=60 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=60
+log: BW64-DIAG pair s1 pid=57 tid=60 fd=37
+log: BW64-DIAG pair s2 pid=57 tid=60 fd=39
+log: BW64-DIAG pair wired pid=57 tid=60 fd1=37 fd2=39
+log: BW64-DIAG pair enter pid=57 tid=67 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=67
+log: BW64-DIAG pair s1 pid=57 tid=67 fd=37
+log: BW64-DIAG pair s2 pid=57 tid=67 fd=40
+log: BW64-DIAG pair wired pid=57 tid=67 fd1=37 fd2=40
+log: BW64-DIAG pair enter pid=57 tid=67 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=67
+log: BW64-DIAG pair s1 pid=57 tid=67 fd=41
+log: BW64-DIAG pair s2 pid=57 tid=67 fd=42
+log: BW64-DIAG pair wired pid=57 tid=67 fd1=41 fd2=42
+log: BW64-DIAG pair enter pid=24 tid=25 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=25
+log: BW64-DIAG pair s1 pid=24 tid=25 fd=31
+log: BW64-DIAG pair s2 pid=24 tid=25 fd=34
+log: BW64-DIAG pair wired pid=24 tid=25 fd1=31 fd2=34
+log: BW64-DIAG pair enter pid=24 tid=68 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=68
+log: BW64-DIAG pair s1 pid=24 tid=68 fd=31
+log: BW64-DIAG pair s2 pid=24 tid=68 fd=35
+log: BW64-DIAG pair wired pid=24 tid=68 fd1=31 fd2=35
+log: BW64-DIAG pair enter pid=24 tid=68 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=68
+log: BW64-DIAG pair s1 pid=24 tid=68 fd=36
+log: BW64-DIAG pair s2 pid=24 tid=68 fd=37
+log: BW64-DIAG pair wired pid=24 tid=68 fd1=36 fd2=37
+log: FsZip: 64 entry streams opened, 17 MB decompressed, 2 MB served from cache, 0 backward reopens
+log: BW64-DIAG pair enter pid=57 tid=62 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=62
+log: BW64-DIAG pair s1 pid=57 tid=62 fd=37
+log: BW64-DIAG pair s2 pid=57 tid=62 fd=38
+log: BW64-DIAG pair wired pid=57 tid=62 fd1=37 fd2=38
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=57 tid=69 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=69
+log: BW64-DIAG pair s1 pid=57 tid=69 fd=37
+log: BW64-DIAG pair s2 pid=57 tid=69 fd=39
+log: BW64-DIAG pair wired pid=57 tid=69 fd1=37 fd2=39
+log: BW64-DIAG pair enter pid=57 tid=69 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=69
+log: BW64-DIAG pair s1 pid=57 tid=69 fd=40
+log: BW64-DIAG pair s2 pid=57 tid=69 fd=41
+log: BW64-DIAG pair wired pid=57 tid=69 fd1=40 fd2=41
+log: BW64-DIAG pair enter pid=57 tid=62 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=62
+log: BW64-DIAG pair s1 pid=57 tid=62 fd=39
+log: BW64-DIAG pair s2 pid=57 tid=62 fd=42
+log: BW64-DIAG pair wired pid=57 tid=62 fd1=39 fd2=42
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=57 tid=70 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=70
+log: BW64-DIAG pair s1 pid=57 tid=70 fd=43
+log: BW64-DIAG pair s2 pid=57 tid=70 fd=44
+log: BW64-DIAG pair wired pid=57 tid=70 fd1=43 fd2=44
+log: BW64-DIAG pair enter pid=57 tid=70 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=70
+log: BW64-DIAG pair s1 pid=57 tid=70 fd=45
+log: BW64-DIAG pair s2 pid=57 tid=70 fd=46
+log: BW64-DIAG pair wired pid=57 tid=70 fd1=45 fd2=46
+log: BW64-DIAG pair enter pid=40 tid=45 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=45
+log: BW64-DIAG pair s1 pid=40 tid=45 fd=18
+log: BW64-DIAG pair s2 pid=40 tid=45 fd=22
+log: BW64-DIAG pair wired pid=40 tid=45 fd1=18 fd2=22
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=40 tid=71 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=71
+log: BW64-DIAG pair s1 pid=40 tid=71 fd=18
+log: BW64-DIAG pair s2 pid=40 tid=71 fd=23
+log: BW64-DIAG pair wired pid=40 tid=71 fd1=18 fd2=23
+log: BW64-DIAG pair enter pid=40 tid=71 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=71
+log: BW64-DIAG pair s1 pid=40 tid=71 fd=24
+log: BW64-DIAG pair s2 pid=40 tid=71 fd=25
+log: BW64-DIAG pair wired pid=40 tid=71 fd1=24 fd2=25
+log: BW64-DIAG pair enter pid=40 tid=71 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=71
+log: BW64-DIAG pair s1 pid=40 tid=71 fd=23
+log: BW64-DIAG pair s2 pid=40 tid=71 fd=26
+log: BW64-DIAG pair wired pid=40 tid=71 fd1=23 fd2=26
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=40 tid=72 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=72
+log: BW64-DIAG pair s1 pid=40 tid=72 fd=23
+log: BW64-DIAG pair s2 pid=40 tid=72 fd=27
+log: BW64-DIAG pair wired pid=40 tid=72 fd1=23 fd2=27
+log: BW64-DIAG pair enter pid=40 tid=72 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=72
+log: BW64-DIAG pair s1 pid=40 tid=72 fd=28
+log: BW64-DIAG pair s2 pid=40 tid=72 fd=29
+log: BW64-DIAG pair wired pid=40 tid=72 fd1=28 fd2=29
+log: 00a8:err:setupapi:do_file_copyW Unsupported style(s) 0x10
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/z:/home/username/apps/fna-runtime.exe' -> fd 29
+log: fszipurl: 97 MB fetched lazily so far
+log: BW64-DIAG pair enter pid=57 tid=62 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=62
+log: BW64-DIAG pair s1 pid=57 tid=62 fd=39
+log: BW64-DIAG pair s2 pid=57 tid=62 fd=44
+log: BW64-DIAG pair wired pid=57 tid=62 fd1=39 fd2=44
+log: BW64-DIAG pair enter pid=57 tid=73 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=73
+log: BW64-DIAG pair s1 pid=57 tid=73 fd=39
+log: BW64-DIAG pair s2 pid=57 tid=73 fd=47
+log: BW64-DIAG pair wired pid=57 tid=73 fd1=39 fd2=47
+log: BW64-DIAG pair enter pid=57 tid=73 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=73
+log: BW64-DIAG pair s1 pid=57 tid=73 fd=48
+log: BW64-DIAG pair s2 pid=57 tid=73 fd=49
+log: BW64-DIAG pair wired pid=57 tid=73 fd1=48 fd2=49
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/conhost.exe' -> fd 190
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=7
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=11
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=7 fd2=11
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=191
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=192
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=191 fd2=192
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: setupThreadStack32: argc=10 envc=21 prog=wine-preloader
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FED10
+log: FsZip: 192 entry streams opened, 127 MB decompressed, 15 MB served from cache, 22 backward reopens
+log: BW64-DIAG pair enter pid=57 tid=62 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=62
+log: BW64-DIAG pair s1 pid=57 tid=62 fd=47
+log: BW64-DIAG pair s2 pid=57 tid=62 fd=50
+log: BW64-DIAG pair wired pid=57 tid=62 fd1=47 fd2=50
+log: BW64-DIAG pair enter pid=57 tid=78 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=78
+log: BW64-DIAG pair s1 pid=57 tid=78 fd=47
+log: BW64-DIAG pair s2 pid=57 tid=78 fd=51
+log: BW64-DIAG pair wired pid=57 tid=78 fd1=47 fd2=51
+log: BW64-DIAG pair enter pid=57 tid=78 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=57 tid=78
+log: BW64-DIAG pair s1 pid=57 tid=78 fd=52
+log: BW64-DIAG pair s2 pid=57 tid=78 fd=53
+log: BW64-DIAG pair wired pid=57 tid=78 fd1=52 fd2=53
+log: BW64-DIAG pair enter pid=76 tid=77 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=76 tid=77
+log: BW64-DIAG pair s1 pid=76 tid=77 fd=4
+log: BW64-DIAG pair s2 pid=76 tid=77 fd=5
+log: BW64-DIAG pair wired pid=76 tid=77 fd1=4 fd2=5
+log: BW64-DIAG pair enter pid=76 tid=77 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=76 tid=77
+log: BW64-DIAG pair s1 pid=76 tid=77 fd=6
+log: BW64-DIAG pair s2 pid=76 tid=77 fd=8
+log: BW64-DIAG pair wired pid=76 tid=77 fd1=6 fd2=8
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/conhost.exe' -> fd 197
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/conhost.exe' -> fd 197
+log: 00d8:fixme:actctx:parse_depend_manifests Could not find dependent assembly L"Microsoft.Windows.Common-Controls" (6.0.0.0)
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/z:/home/username/apps/fna-runtime.exe' -> fd 199
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=7
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=10
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=7 fd2=10
+log: 0024:fixme:ntdll:NtQuerySystemInformation info_class SYSTEM_PERFORMANCE_INFORMATION
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=10 tid=79 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=79
+log: BW64-DIAG pair s1 pid=10 tid=79 fd=12
+log: BW64-DIAG pair s2 pid=10 tid=79 fd=13
+log: BW64-DIAG pair wired pid=10 tid=79 fd1=12 fd2=13
+log: BW64-DIAG pair enter pid=10 tid=79 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=79
+log: BW64-DIAG pair s1 pid=10 tid=79 fd=14
+log: BW64-DIAG pair s2 pid=10 tid=79 fd=15
+log: BW64-DIAG pair wired pid=10 tid=79 fd1=14 fd2=15
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=7
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=11
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=7 fd2=11
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=10 tid=80 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=80
+log: BW64-DIAG pair s1 pid=10 tid=80 fd=7
+log: BW64-DIAG pair s2 pid=10 tid=80 fd=13
+log: BW64-DIAG pair wired pid=10 tid=80 fd1=7 fd2=13
+log: BW64-DIAG pair enter pid=10 tid=80 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=80
+log: BW64-DIAG pair s1 pid=10 tid=80 fd=16
+log: BW64-DIAG pair s2 pid=10 tid=80 fd=17
+log: BW64-DIAG pair wired pid=10 tid=80 fd1=16 fd2=17
+log: fszipurl: 17 MB fetched lazily so far
+log: 0024:warn:debugstr:OutputDebugStringA "fna-runtime: BEGIN\n"
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/explorer.exe' -> fd 70
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=13
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=19
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=13 fd2=19
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=72
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=177
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=72 fd2=177
+log: setupThreadStack32: argc=4 envc=22 prog=wine-preloader
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FED10
+log: BW64-DIAG pair enter pid=83 tid=84 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=84
+log: BW64-DIAG pair s1 pid=83 tid=84 fd=4
+log: BW64-DIAG pair s2 pid=83 tid=84 fd=5
+log: BW64-DIAG pair wired pid=83 tid=84 fd1=4 fd2=5
+log: BW64-DIAG pair enter pid=83 tid=84 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=84
+log: BW64-DIAG pair s1 pid=83 tid=84 fd=6
+log: BW64-DIAG pair s2 pid=83 tid=84 fd=7
+log: BW64-DIAG pair wired pid=83 tid=84 fd1=6 fd2=7
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/explorer.exe' -> fd 181
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/explorer.exe' -> fd 181
+log: 00ec:fixme:actctx:parse_depend_manifests Could not find dependent assembly L"Microsoft.Windows.Common-Controls" (6.0.0.0)
+log: XWireServer: accepted X11 client connection (now 1 open)
+log: XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+log: vk32: FIRST trap - 32-bit guest libvulkan.so.1 mapped (witness fnId=0)
+log: vk32: gipa HIT : vkCreateInstance
+log: vk32: trap vkCreateInstance
+log: vk32: vkCreateInstance ok instance=0x324b0100
+log: vk32: gipa HIT : vkDestroyInstance
+log: vk32: gipa HIT : vkEnumeratePhysicalDevices
+log: vk32: gipa HIT : vkGetPhysicalDeviceProperties2KHR
+log: vk32: gipa HIT : vkGetPhysicalDeviceMemoryProperties
+log: vk32: gipa HIT : vkGetPhysicalDeviceMemoryProperties2KHR
+log: vk32: trap vkEnumeratePhysicalDevices
+log: vk32: trap vkEnumeratePhysicalDevices
+log: vk32: trap vkGetPhysicalDeviceProperties2KHR
+log: vk32: trap vkGetPhysicalDeviceMemoryProperties
+log: XWireServer: accepted X11 client connection (now 2 open)
+log: XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+log: BW64-DIAG pair enter pid=83 tid=84 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=84
+log: BW64-DIAG pair s1 pid=83 tid=84 fd=10
+log: BW64-DIAG pair s2 pid=83 tid=84 fd=11
+log: BW64-DIAG pair wired pid=83 tid=84 fd1=10 fd2=11
+log: BW64-DIAG pair enter pid=83 tid=85 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=85
+log: BW64-DIAG pair s1 pid=83 tid=85 fd=10
+log: BW64-DIAG pair s2 pid=83 tid=85 fd=12
+log: BW64-DIAG pair wired pid=83 tid=85 fd1=10 fd2=12
+log: BW64-DIAG pair enter pid=83 tid=85 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=85
+log: BW64-DIAG pair s1 pid=83 tid=85 fd=14
+log: BW64-DIAG pair s2 pid=83 tid=85 fd=15
+log: BW64-DIAG pair wired pid=83 tid=85 fd1=14 fd2=15
+log: BW64-DIAG pair enter pid=83 tid=84 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=84
+log: BW64-DIAG pair s1 pid=83 tid=84 fd=12
+log: BW64-DIAG pair s2 pid=83 tid=84 fd=16
+log: BW64-DIAG pair wired pid=83 tid=84 fd1=12 fd2=16
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=83 tid=86 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=86
+log: BW64-DIAG pair s1 pid=83 tid=86 fd=12
+log: BW64-DIAG pair s2 pid=83 tid=86 fd=17
+log: BW64-DIAG pair wired pid=83 tid=86 fd1=12 fd2=17
+log: BW64-DIAG pair enter pid=83 tid=86 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=86
+log: BW64-DIAG pair s1 pid=83 tid=86 fd=18
+log: BW64-DIAG pair s2 pid=83 tid=86 fd=19
+log: BW64-DIAG pair wired pid=83 tid=86 fd1=18 fd2=19
+log: XWireServer: accepted X11 client connection (now 3 open)
+log: XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+log: Xlib:  extension "SHAPE" missing on display ":0".
+log: Xlib:  extension "SHAPE" missing on display ":0".
+log: Xlib:  extension "SHAPE" missing on display ":0".
+log: Xlib:  extension "SHAPE" missing on display ":0".
+log: BW64-DIAG pair enter pid=83 tid=84 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=84
+log: BW64-DIAG pair s1 pid=83 tid=84 fd=20
+log: BW64-DIAG pair s2 pid=83 tid=84 fd=21
+log: BW64-DIAG pair wired pid=83 tid=84 fd1=20 fd2=21
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=83 tid=87 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=87
+log: BW64-DIAG pair s1 pid=83 tid=87 fd=20
+log: BW64-DIAG pair s2 pid=83 tid=87 fd=22
+log: BW64-DIAG pair wired pid=83 tid=87 fd1=20 fd2=22
+log: BW64-DIAG pair enter pid=83 tid=87 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=83 tid=87
+log: BW64-DIAG pair s1 pid=83 tid=87 fd=23
+log: BW64-DIAG pair s2 pid=83 tid=87 fd=24
+log: BW64-DIAG pair wired pid=83 tid=87 fd1=23 fd2=24
+log: FsZip: 256 entry streams opened, 143 MB decompressed, 20 MB served from cache, 26 backward reopens
+log: BW64-DIAG pair enter pid=24 tid=26 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=26
+log: BW64-DIAG pair s1 pid=24 tid=26 fd=15
+log: BW64-DIAG pair s2 pid=24 tid=26 fd=18
+log: BW64-DIAG pair wired pid=24 tid=26 fd1=15 fd2=18
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=24 tid=88 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=88
+log: BW64-DIAG pair s1 pid=24 tid=88 fd=15
+log: BW64-DIAG pair s2 pid=24 tid=88 fd=20
+log: BW64-DIAG pair wired pid=24 tid=88 fd1=15 fd2=20
+log: BW64-DIAG pair enter pid=24 tid=88 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=88
+log: BW64-DIAG pair s1 pid=24 tid=88 fd=21
+log: BW64-DIAG pair s2 pid=24 tid=88 fd=35
+log: BW64-DIAG pair wired pid=24 tid=88 fd1=21 fd2=35
+log: BW64-DIAG pair enter pid=24 tid=88 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=88
+log: BW64-DIAG pair s1 pid=24 tid=88 fd=20
+log: BW64-DIAG pair s2 pid=24 tid=88 fd=38
+log: BW64-DIAG pair wired pid=24 tid=88 fd1=20 fd2=38
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=24 tid=89 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=89
+log: BW64-DIAG pair s1 pid=24 tid=89 fd=20
+log: BW64-DIAG pair s2 pid=24 tid=89 fd=39
+log: BW64-DIAG pair wired pid=24 tid=89 fd1=20 fd2=39
+log: BW64-DIAG pair enter pid=24 tid=89 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=89
+log: BW64-DIAG pair s1 pid=24 tid=89 fd=40
+log: BW64-DIAG pair s2 pid=24 tid=89 fd=41
+log: BW64-DIAG pair wired pid=24 tid=89 fd1=40 fd2=41
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/rpcss.exe' -> fd 234
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/rpcss.exe' -> fd 234
+log: BW64-DIAG pair enter pid=24 tid=89 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=24 tid=89
+log: BW64-DIAG pair s1 pid=24 tid=89 fd=39
+log: BW64-DIAG pair s2 pid=24 tid=89 fd=43
+log: BW64-DIAG pair wired pid=24 tid=89 fd1=39 fd2=43
+log: BW64-DIAG pair enter pid=16 tid=17 af=1 type=1 flags=0x0
+log: BW64-DIAG pair locked pid=16 tid=17
+log: BW64-DIAG pair s1 pid=16 tid=17 fd=236
+log: BW64-DIAG pair s2 pid=16 tid=17 fd=237
+log: BW64-DIAG pair wired pid=16 tid=17 fd1=236 fd2=237
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+log: setupThreadStack32: env[0]=HOME=/home/username
+log: setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+log: setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+log: setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+log: setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+log: setupThreadStack32: AT_EXECFN=103FED48
+log: BW64-DIAG pair enter pid=92 tid=93 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=93
+log: BW64-DIAG pair s1 pid=92 tid=93 fd=4
+log: BW64-DIAG pair s2 pid=92 tid=93 fd=5
+log: BW64-DIAG pair wired pid=92 tid=93 fd1=4 fd2=5
+log: BW64-DIAG pair enter pid=92 tid=93 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=93
+log: BW64-DIAG pair s1 pid=92 tid=93 fd=6
+log: BW64-DIAG pair s2 pid=92 tid=93 fd=7
+log: BW64-DIAG pair wired pid=92 tid=93 fd1=6 fd2=7
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/rpcss.exe' -> fd 239
+log: sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/rpcss.exe' -> fd 239
+log: BW64-DIAG pair enter pid=24 tid=26 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=26
+log: BW64-DIAG pair s1 pid=24 tid=26 fd=39
+log: BW64-DIAG pair s2 pid=24 tid=26 fd=42
+log: BW64-DIAG pair wired pid=24 tid=26 fd1=39 fd2=42
+log: BW64-DIAG pair enter pid=24 tid=94 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=94
+log: BW64-DIAG pair s1 pid=24 tid=94 fd=39
+log: BW64-DIAG pair s2 pid=24 tid=94 fd=43
+log: BW64-DIAG pair wired pid=24 tid=94 fd1=39 fd2=43
+log: BW64-DIAG pair enter pid=24 tid=94 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=94
+log: BW64-DIAG pair s1 pid=24 tid=94 fd=44
+log: BW64-DIAG pair s2 pid=24 tid=94 fd=45
+log: BW64-DIAG pair wired pid=24 tid=94 fd1=44 fd2=45
+log: BW64-DIAG pair enter pid=24 tid=94 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=94
+log: BW64-DIAG pair s1 pid=24 tid=94 fd=43
+log: BW64-DIAG pair s2 pid=24 tid=94 fd=46
+log: BW64-DIAG pair wired pid=24 tid=94 fd1=43 fd2=46
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=24 tid=95 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=95
+log: BW64-DIAG pair s1 pid=24 tid=95 fd=43
+log: BW64-DIAG pair s2 pid=24 tid=95 fd=47
+log: BW64-DIAG pair wired pid=24 tid=95 fd1=43 fd2=47
+log: BW64-DIAG pair enter pid=24 tid=95 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=24 tid=95
+log: BW64-DIAG pair s1 pid=24 tid=95 fd=48
+log: BW64-DIAG pair s2 pid=24 tid=95 fd=49
+log: BW64-DIAG pair wired pid=24 tid=95 fd1=48 fd2=49
+log: BW64-DIAG pair enter pid=92 tid=93 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=93
+log: BW64-DIAG pair s1 pid=92 tid=93 fd=8
+log: BW64-DIAG pair s2 pid=92 tid=93 fd=9
+log: BW64-DIAG pair wired pid=92 tid=93 fd1=8 fd2=9
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=92 tid=96 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=96
+log: BW64-DIAG pair s1 pid=92 tid=96 fd=8
+log: BW64-DIAG pair s2 pid=92 tid=96 fd=10
+log: BW64-DIAG pair wired pid=92 tid=96 fd1=8 fd2=10
+log: BW64-DIAG pair enter pid=92 tid=96 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=96
+log: BW64-DIAG pair s1 pid=92 tid=96 fd=11
+log: BW64-DIAG pair s2 pid=92 tid=96 fd=12
+log: BW64-DIAG pair wired pid=92 tid=96 fd1=11 fd2=12
+log: BW64-DIAG pair enter pid=92 tid=96 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=96
+log: BW64-DIAG pair s1 pid=92 tid=96 fd=10
+log: BW64-DIAG pair s2 pid=92 tid=96 fd=13
+log: BW64-DIAG pair wired pid=92 tid=96 fd1=10 fd2=13
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=92 tid=97 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=97
+log: BW64-DIAG pair s1 pid=92 tid=97 fd=10
+log: BW64-DIAG pair s2 pid=92 tid=97 fd=14
+log: BW64-DIAG pair wired pid=92 tid=97 fd1=10 fd2=14
+log: BW64-DIAG pair enter pid=92 tid=97 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=97
+log: BW64-DIAG pair s1 pid=92 tid=97 fd=15
+log: BW64-DIAG pair s2 pid=92 tid=97 fd=16
+log: BW64-DIAG pair wired pid=92 tid=97 fd1=15 fd2=16
+log: BW64-DIAG pair enter pid=92 tid=97 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=97
+log: BW64-DIAG pair s1 pid=92 tid=97 fd=14
+log: BW64-DIAG pair s2 pid=92 tid=97 fd=17
+log: BW64-DIAG pair wired pid=92 tid=97 fd1=14 fd2=17
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=92 tid=98 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=98
+log: BW64-DIAG pair s1 pid=92 tid=98 fd=14
+log: BW64-DIAG pair s2 pid=92 tid=98 fd=18
+log: BW64-DIAG pair wired pid=92 tid=98 fd1=14 fd2=18
+log: BW64-DIAG pair enter pid=92 tid=98 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=98
+log: BW64-DIAG pair s1 pid=92 tid=98 fd=19
+log: BW64-DIAG pair s2 pid=92 tid=98 fd=20
+log: BW64-DIAG pair wired pid=92 tid=98 fd1=19 fd2=20
+log: BW64-DIAG pair enter pid=92 tid=97 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=97
+log: BW64-DIAG pair s1 pid=92 tid=97 fd=18
+log: BW64-DIAG pair s2 pid=92 tid=97 fd=21
+log: BW64-DIAG pair wired pid=92 tid=97 fd1=18 fd2=21
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=92 tid=99 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=99
+log: BW64-DIAG pair s1 pid=92 tid=99 fd=18
+log: BW64-DIAG pair s2 pid=92 tid=99 fd=22
+log: BW64-DIAG pair wired pid=92 tid=99 fd1=18 fd2=22
+log: BW64-DIAG pair enter pid=92 tid=99 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=99
+log: BW64-DIAG pair s1 pid=92 tid=99 fd=23
+log: BW64-DIAG pair s2 pid=92 tid=99 fd=24
+log: BW64-DIAG pair wired pid=92 tid=99 fd1=23 fd2=24
+log: BW64-DIAG pair enter pid=92 tid=98 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=98
+log: BW64-DIAG pair s1 pid=92 tid=98 fd=22
+log: BW64-DIAG pair s2 pid=92 tid=98 fd=25
+log: BW64-DIAG pair wired pid=92 tid=98 fd1=22 fd2=25
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=92 tid=100 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=100
+log: BW64-DIAG pair s1 pid=92 tid=100 fd=22
+log: BW64-DIAG pair s2 pid=92 tid=100 fd=26
+log: BW64-DIAG pair wired pid=92 tid=100 fd1=22 fd2=26
+log: BW64-DIAG pair enter pid=92 tid=100 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=100
+log: BW64-DIAG pair s1 pid=92 tid=100 fd=27
+log: BW64-DIAG pair s2 pid=92 tid=100 fd=28
+log: BW64-DIAG pair wired pid=92 tid=100 fd1=27 fd2=28
+log: BW64-DIAG pair enter pid=92 tid=100 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=100
+log: BW64-DIAG pair s1 pid=92 tid=100 fd=26
+log: BW64-DIAG pair s2 pid=92 tid=100 fd=29
+log: BW64-DIAG pair wired pid=92 tid=100 fd1=26 fd2=29
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=92 tid=101 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=101
+log: BW64-DIAG pair s1 pid=92 tid=101 fd=26
+log: BW64-DIAG pair s2 pid=92 tid=101 fd=30
+log: BW64-DIAG pair wired pid=92 tid=101 fd1=26 fd2=30
+log: BW64-DIAG pair enter pid=92 tid=101 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=92 tid=101
+log: BW64-DIAG pair s1 pid=92 tid=101 fd=31
+log: BW64-DIAG pair s2 pid=92 tid=101 fd=32
+log: BW64-DIAG pair wired pid=92 tid=101 fd1=31 fd2=32
+log: XWireServer: accepted X11 client connection (now 4 open)
+log: XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+log: sys_openat: OPENED '/home/username/.wine/dosdevices/z:/home/username/apps/fna-runtime.exe' -> fd 264
+log: XWireServer: accepted X11 client connection (now 5 open)
+log: XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=19
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=20
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=19 fd2=20
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=10 tid=102 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=102
+log: BW64-DIAG pair s1 pid=10 tid=102 fd=19
+log: BW64-DIAG pair s2 pid=10 tid=102 fd=21
+log: BW64-DIAG pair wired pid=10 tid=102 fd1=19 fd2=21
+log: BW64-DIAG pair enter pid=10 tid=102 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=102
+log: BW64-DIAG pair s1 pid=10 tid=102 fd=22
+log: BW64-DIAG pair s2 pid=10 tid=102 fd=23
+log: BW64-DIAG pair wired pid=10 tid=102 fd1=22 fd2=23
+log: BW64-DIAG pair enter pid=40 tid=45 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=45
+log: BW64-DIAG pair s1 pid=40 tid=45 fd=23
+log: BW64-DIAG pair s2 pid=40 tid=45 fd=26
+log: BW64-DIAG pair wired pid=40 tid=45 fd1=23 fd2=26
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+log: BW64-DIAG pair enter pid=40 tid=103 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=103
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair s1 pid=40 tid=103 fd=23
+log: BW64-DIAG pair s2 pid=40 tid=103 fd=27
+log: BW64-DIAG pair wired pid=40 tid=103 fd1=23 fd2=27
+log: BW64-DIAG pair enter pid=40 tid=103 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=103
+log: BW64-DIAG pair s1 pid=40 tid=103 fd=28
+log: BW64-DIAG pair s2 pid=40 tid=103 fd=29
+log: BW64-DIAG pair wired pid=40 tid=103 fd1=28 fd2=29
+log: BW64-DIAG pair enter pid=40 tid=103 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=103
+log: BW64-DIAG pair s1 pid=40 tid=103 fd=27
+log: BW64-DIAG pair s2 pid=40 tid=103 fd=30
+log: BW64-DIAG pair wired pid=40 tid=103 fd1=27 fd2=30
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=40 tid=104 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=104
+log: BW64-DIAG pair s1 pid=40 tid=104 fd=27
+log: BW64-DIAG pair s2 pid=40 tid=104 fd=31
+log: BW64-DIAG pair wired pid=40 tid=104 fd1=27 fd2=31
+log: BW64-DIAG pair enter pid=40 tid=104 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=40 tid=104
+log: BW64-DIAG pair s1 pid=40 tid=104 fd=32
+log: BW64-DIAG pair s2 pid=40 tid=104 fd=33
+log: BW64-DIAG pair wired pid=40 tid=104 fd1=32 fd2=33
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=21
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=24
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=21 fd2=24
+error: WARNING: using emscripten GL emulation. This is a collection of limited workarounds, do not expect it to work.
+error: WARNING: using emscripten GL emulation unsafe opts. If weirdness happens, try -sGL_UNSAFE_OPTS=0
+log: BW64-DIAG pair enter pid=10 tid=105 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=105
+log: BW64-DIAG pair s1 pid=10 tid=105 fd=21
+log: BW64-DIAG pair s2 pid=10 tid=105 fd=25
+log: BW64-DIAG pair wired pid=10 tid=105 fd1=21 fd2=25
+log: BW64-DIAG pair enter pid=10 tid=105 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=105
+log: BW64-DIAG pair s1 pid=10 tid=105 fd=26
+log: BW64-DIAG pair s2 pid=10 tid=105 fd=27
+log: BW64-DIAG pair wired pid=10 tid=105 fd1=26 fd2=27
+log: 0024:fixme:xinput:XInputGetBatteryInformation index 0, type 0, battery 784DD554.
+log: gl64 PROC unsupported glXAllocateMemoryNV: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glXFreeMemoryNV: glXGetProcAddressARB returned NULL
+log: gl64: WebGPU context unavailable; continuing with WebGL2
+error: WARNING: using emscripten GL immediate mode emulation. This is very limited in what it supports
+log: gl64: host GL up (WebGL2) — vendor='WebKit' renderer='WebKit WebGL' version='OpenGL ES 3.0 (WebGL 2.0 (OpenGL ES 3.0 Chromium))'
+log: XWire: first window mapped (present sink=SDL)
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x8018 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x8017 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x25 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x26 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x27 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x28 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x24 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x186a0 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x186a1 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x20b2 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: BW64-FAIL gl-glx-fbconfig-attrib attr=0x20b0 outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)
+log: Xlib:  extension "SHAPE" missing on display ":0".
+log: 0024:fixme:win:RegisterTouchWindow hwnd 0002006A, flags 0x3 stub!
+log: bw64: METRICS {"v":1,"uptimeMs":1794222021028,"winMs":561.5,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":0,"count":0,"fps":null,"frameMs":null,"path":"none"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":89,"ms":108.34},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: gl64 GLERR 0x500 after recent fnIds [214 215 400 649]
+log: gl64 GLERR 0x500 after recent fnIds [400 214 215 649]
+log: gl64 PROC unsupported glClearDepthf: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glClearDepthfOES: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glDepthRangef: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glDepthRangefOES: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glGetInternalformativ: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glInvalidateFramebuffer: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glSampleMaski: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glStringMarkerGREMEDY: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glDeleteObjectARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glAttachObjectARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glCompileShaderARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glCreateProgramObjectARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glCreateShaderObjectARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glGetInfoLogARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glGetObjectParameterivARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glGetUniformLocationARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glLinkProgramARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glShaderSourceARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glUniform1iARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glUniform1ivARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glUniform4fvARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glUniform4ivARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glUseProgramObjectARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glDisableVertexAttribArrayARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glEnableVertexAttribArrayARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glGetAttribLocationARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glVertexAttribPointerARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glGetProgramivARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glProgramLocalParameter4fvARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glDeleteProgramsARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glGenProgramsARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glBindProgramARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glProgramStringARB: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glProgramLocalParameterI4ivNV: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glShaderBinary: glXGetProcAddressARB returned NULL
+log: gl64 PROC unsupported glSpecializeShaderARB: glXGetProcAddressARB returned NULL
+log: bw64: METRICS {"v":1,"uptimeMs":1794222030229,"winMs":953.1,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":0,"count":0,"fps":null,"frameMs":null,"path":"none"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":247,"ms":262.25},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: bw64: METRICS {"v":1,"uptimeMs":1794222030807,"winMs":578.0,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":0,"count":0,"fps":null,"frameMs":null,"path":"none"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":15,"ms":208.37},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: BW64-FAIL gl-packed-type type=0x1401 outcome=upload not unpacked (no packed layout model)
+log: 0024:warn:debugstr:OutputDebugStringA "fna-runtime: LOADED TEXTURE_ROUNDTRIP\n"
+log: XWire: first window mapped (present sink=SDL)
+log: BW64-DIAG pair enter pid=10 tid=11 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=11
+log: BW64-DIAG pair s1 pid=10 tid=11 fd=25
+log: BW64-DIAG pair s2 pid=10 tid=11 fd=28
+log: BW64-DIAG pair wired pid=10 tid=11 fd1=25 fd2=28
+log: BW64-DIAG pair enter pid=10 tid=106 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=106
+log: BW64-DIAG pair s1 pid=10 tid=106 fd=25
+log: BW64-DIAG pair s2 pid=10 tid=106 fd=29
+log: BW64-DIAG pair wired pid=10 tid=106 fd1=25 fd2=29
+log: BW64-DIAG pair enter pid=10 tid=106 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=106
+log: BW64-DIAG pair s1 pid=10 tid=106 fd=30
+log: BW64-DIAG pair s2 pid=10 tid=106 fd=31
+log: BW64-DIAG pair wired pid=10 tid=106 fd1=30 fd2=31
+log: BW64-DIAG pair enter pid=10 tid=106 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=106
+log: BW64-DIAG pair s1 pid=10 tid=106 fd=29
+log: BW64-DIAG pair s2 pid=10 tid=106 fd=32
+log: BW64-DIAG pair wired pid=10 tid=106 fd1=29 fd2=32
+log: BW64-DIAG pair enter pid=10 tid=107 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=107
+log: BW64-DIAG pair s1 pid=10 tid=107 fd=29
+log: BW64-DIAG pair s2 pid=10 tid=107 fd=33
+log: BW64-DIAG pair wired pid=10 tid=107 fd1=29 fd2=33
+log: BW64-DIAG pair enter pid=10 tid=107 af=1 type=1 flags=0x80000
+log: BW64-DIAG pair locked pid=10 tid=107
+log: BW64-DIAG pair s1 pid=10 tid=107 fd=34
+log: BW64-DIAG pair s2 pid=10 tid=107 fd=35
+log: BW64-DIAG pair wired pid=10 tid=107 fd1=34 fd2=35
+log: 013c:fixme:msctf:ThreadMgr_ActivateEx Unimplemented flags 0x4
+log: 0024:err:ole:StdMarshalImpl_MarshalInterface Failed to create ifstub, hr 0x80004002
+log: 0024:err:ole:CoMarshalInterface Failed to marshal the interface {ea1ea136-19df-11d7-a6d2-00065b84435c}, hr 0x80004002
+log: 0024:fixme:imm:NotifyIME himc 00010054, action 0x11, index 0, value 0 stub!
+log: 0024:err:ole:StdMarshalImpl_MarshalInterface Failed to create ifstub, hr 0x80004002
+log: 0024:err:ole:CoMarshalInterface Failed to marshal the interface {ea1ea136-19df-11d7-a6d2-00065b84435c}, hr 0x80004002
+log: fszipurl: 113 MB fetched lazily so far
+log: bw64: METRICS {"v":1,"uptimeMs":1794222036561,"winMs":516.5,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":0,"count":0,"fps":null,"frameMs":null,"path":"none"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":18,"ms":283.98},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: bw64: METRICS {"v":1,"uptimeMs":1794222037078,"winMs":516.9,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":0,"count":0,"fps":null,"frameMs":null,"path":"none"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":21,"ms":313.31},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: Showing Window
+log: XWire SDL: host screen sized to 640x480 (BoxedWine screen)
+error: WARNING: using emscripten GL immediate mode emulation. This is very limited in what it supports
+log: bw64: METRICS {"v":1,"uptimeMs":1794222037598,"winMs":519.5,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":1,"count":1,"fps":1.9,"frameMs":519.49,"path":"sdl"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":8,"ms":474.47},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: 0024:warn:debugstr:OutputDebugStringA "fna-runtime: READY\n"
+log: bw64: METRICS {"v":1,"uptimeMs":1794222038111,"winMs":513.6,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":4,"count":4,"fps":7.8,"frameMs":128.40,"path":"sdl"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":19,"ms":455.02},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: bw64: METRICS {"v":1,"uptimeMs":1794222038631,"winMs":519.5,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":4,"count":4,"fps":7.7,"frameMs":129.88,"path":"sdl"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":21,"ms":556.89},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: bw64: METRICS {"v":1,"uptimeMs":1794222039311,"winMs":680.3,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":4,"count":4,"fps":5.9,"frameMs":170.07,"path":"sdl"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":19,"ms":435.55},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: 0024:warn:debugstr:OutputDebugStringA "fna-runtime: RIGHT x=160\n"
+log: bw64: METRICS {"v":1,"uptimeMs":1794222040195,"winMs":883.3,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":4,"count":4,"fps":4.5,"frameMs":220.82,"path":"sdl"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":17,"ms":637.98},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: bw64: METRICS {"v":1,"uptimeMs":1794222040711,"winMs":516.7,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":3,"count":3,"fps":5.8,"frameMs":172.25,"path":"sdl"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":18,"ms":410.56},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+log: bw64: METRICS {"v":1,"uptimeMs":1794222041245,"winMs":533.3,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":4,"count":4,"fps":7.5,"frameMs":133.32,"path":"sdl"},"vk":{"supported":true,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":true,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":0,"ms":0.00},"gl":{"supported":true,"calls":20,"ms":516.67},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}

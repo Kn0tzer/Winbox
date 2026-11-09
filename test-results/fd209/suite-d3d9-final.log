@@ -1,0 +1,7 @@
+Browser tests (Playwright, needs box):
+  PASS d3d9-32 (55933ms)
+  PASS d3d9-comprehensive (217947ms)
+
+==================================================
+SUITE RESULT: 2 passed, 0 failed
+==================================================

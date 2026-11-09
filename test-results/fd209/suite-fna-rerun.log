@@ -1,0 +1,13 @@
+Browser tests (Playwright, needs box):
+  FAIL fna-runtime (42947ms)
+    ASSERT FAILED: FNA SpriteBatch must present a red rectangle
+      expected > 10000, got: 0
+      expected > 10000, got: 0
+        at checkGreaterThan (file:///home/ubuntu/winbox-project/worktrees/wt-fd209/web/tests/suite/lib/assert.mjs:40:11)
+        at FnaRuntimeTest.run (file:///home/ubuntu/winbox-project/worktrees/wt-fd209/web/tests/suite/browser/fna-runtime.test.mjs:43:5)
+
+==================================================
+SUITE RESULT: 0 passed, 1 failed
+Failed tests:
+  - fna-runtime [browser]
+==================================================

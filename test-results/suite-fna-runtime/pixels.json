@@ -1,0 +1,14 @@
+{
+  "before": {
+    "count": 16384,
+    "centerX": 103.5,
+    "width": 640,
+    "height": 480
+  },
+  "after": {
+    "count": 16384,
+    "centerX": 223.5,
+    "width": 640,
+    "height": 480
+  }
+}

@@ -1,0 +1,6 @@
+Browser tests (Playwright, needs box):
+  PASS celeste-boot (298759ms)
+
+==================================================
+SUITE RESULT: 1 passed, 0 failed
+==================================================

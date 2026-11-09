@@ -1,0 +1,15 @@
+Browser tests (Playwright, needs box):
+  PASS d3d10-comprehensive (206850ms)
+  PASS d3d11-comprehensive (162746ms)
+[probe-slots] waiting for light slot: queue position 1/1; holders: none
+  PASS d3d11-triangle (389379ms)
+[probe-slots] waiting for light slot: queue position 1/1; holders: none
+  PASS d3d12-comprehensive (393846ms)
+[probe-slots] waiting for light slot: queue position 1/1; holders: none
+[probe-slots] waiting for light slot: queue position 1/1; holders: none
+  PASS d3d9-32 (177756ms)
+  PASS d3d9-comprehensive (292086ms)
+
+==================================================
+SUITE RESULT: 6 passed, 0 failed
+==================================================

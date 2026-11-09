@@ -1,0 +1,51 @@
+[bw64-build] lock acquired (pid=1354983)
+Runtime assets verified (13 files).
+make: Entering directory '/home/ubuntu/winbox-project/worktrees/wt-fd209/project/emscripten'
+MAKEFLAGS is -j2
+make[1]: Entering directory '/home/ubuntu/winbox-project/worktrees/wt-fd209/project/emscripten'
+MAKEFLAGS 
+em++: warning: -pthread + ALLOW_MEMORY_GROWTH may run non-wasm code slowly, see https://github.com/WebAssembly/design/issues/1271 [-Wpthreads-mem-growth]
+make[1]: Leaving directory '/home/ubuntu/winbox-project/worktrees/wt-fd209/project/emscripten'
+make: Leaving directory '/home/ubuntu/winbox-project/worktrees/wt-fd209/project/emscripten'
+Optional local game archives not staged; launcher demos use the hosted catalog.
+Wine Mono 7.4.0: complete runtime verified (/home/ubuntu/winbox-project/store/rootfs64/mono32)
+libvk32: source and binary verified
+libvk64: source and binary verified
+libgl64: committed libGL.so.1 matches a fresh build of libgl64.c
+libgl32: generated source and binary match a fresh build
+Shared runtime: 517,564,302 bytes (94deeb6b2478)
+Removed 1 winemenubuilder RunServices value(s) from /home/ubuntu/winbox-project/worktrees/wt-fd209/dist/runtime/prefix32.zip.
+Removed 0 winemenubuilder RunServices value(s) from /home/ubuntu/winbox-project/worktrees/wt-fd209/dist/runtime/prefix64.zip.
+PASS winehq backports (source + shipped zip)
+PASS wine8 loader backports (source + shipped zip)
+PASS FD-167 i386 PE backports (source + shipped zip)
+PASS FD-169 i386 CRT rebuilds (source + shipped zip)
+PASS FD-171 i386 PE backports (source + shipped zip)
+PASS FD-195 i386 setupapi + hidclass (source + shipped zip)
+PASS FD-195 x86-64 libudev (source + shipped zip)
+PASS FD-167+FD-171 combined i386 PE (source + shipped zip)
+PASS wine10 win32u backport 32-bit (source + shipped zip)
+PASS vkd3d payloads (source + shipped zip)
+PASS vkd3d payloads 32-bit (shipped zip)
+PASS validate_service_runtime (shipped pairs)
+PASS drivers/ mirror exact (both zips, FD-188)
+PASS driver .inf files in share/wine/ + prefix32 inf/ (FD-188)
+PASS gstreamer closure rides the support pack (absent from boot zips)
+PASS support pack member uniqueness + Vulkan shim pins (FD-53)
+PASS retained runtime-assets archive agrees with the file pins (FD-73)
+PASS DirectX redist sets complete (both zips)
+PASS VC++ runtime sets (both zips, asymmetries pinned)
+PASS wineserver dispatch is ELF (no /bin/sh script)
+PASS manifest matches shipped zips
+PASS ALSA-to-OSS bridge members (staging-tree anchored, both arches)
+PASS fonts32 faces (source + shipped zip)
+PASS fonts64 faces (source + shipped zip)
+PASS prefix64 Arial font replacement (FD-86)
+PASS prefix64 PlugPlay + bus services (FD-189)
+PASS CJK font pin
+SKIP prefix64 built artifact: build-prefix64.sh output not present
+PASS prefix64 built artifact sections
+0 failures, 1 skips
+Browser export: /home/ubuntu/winbox-project/worktrees/wt-fd209/dist
+Browser export verified: 34 .mjs syntax files; runtime version substituted; dependency archive 94deeb6b2478 verified; host header expectations documented.
+[bw64-build] BUILD COMPLETE

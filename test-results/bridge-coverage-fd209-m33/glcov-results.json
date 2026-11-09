@@ -1,0 +1,2006 @@
+{
+  "glActiveTexture": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glAttachShader": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glBegin": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 16000,
+    "us2": 0
+  },
+  "glColor3f": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 17000,
+    "us2": 0
+  },
+  "glVertex3f": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 16000,
+    "us2": 0
+  },
+  "glColor4f": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 17000,
+    "us2": 0
+  },
+  "glVertex2f": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 16000,
+    "us2": 0
+  },
+  "glNormal3f": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 17000,
+    "us2": 0
+  },
+  "glEnd": {
+    "err1": 1281,
+    "err2": 1281,
+    "us1": 33000,
+    "us2": 0
+  },
+  "glBeginQuery": {
+    "err1": 1280,
+    "err2": 1280,
+    "us1": 34000,
+    "us2": 23000
+  },
+  "glEndQuery": {
+    "err1": 1280,
+    "err2": 1280,
+    "us1": 21000,
+    "us2": 23000
+  },
+  "glBeginTransformFeedback": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 34000,
+    "us2": 17000
+  },
+  "glEndTransformFeedback": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 18000,
+    "us2": 18000
+  },
+  "glBindAttribLocation": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glBindBuffer": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glBindBufferBase": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glBindBufferRange": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glBindFragDataLocation": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 16000,
+    "us2": 17000
+  },
+  "glBindFramebuffer": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glBindRenderbuffer": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glBindSampler": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glBindTexture": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glBindVertexArray": {
+    "err1": 1281,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glBlendColor": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glBlendEquation": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glBlendEquationSeparate": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glBlendEquationSeparatei": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glBlendEquationi": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glBlendFunc": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glBlendFuncSeparate": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glBlendFuncSeparatei": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glBlendFunci": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glBlitFramebuffer": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 39000,
+    "us2": 28000
+  },
+  "glBufferData": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glBufferStorage": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glBufferSubData": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glCheckFramebufferStatus": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glClear": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glClearBufferfi": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glClearBufferfv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glClearBufferiv": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 37000,
+    "us2": 30000
+  },
+  "glClearBufferuiv": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glClearColor": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glClearDepth": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glClientWaitSync": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glColorMask": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glColorMaski": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glColorMaterial": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glCompileShader": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glCompressedTexImage2D": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glCompressedTexImage3D": {
+    "err1": 37442,
+    "err2": 0,
+    "us1": 199000,
+    "us2": 34000
+  },
+  "glCompressedTexSubImage2D": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 17000,
+    "us2": 17000
+  },
+  "glCompressedTexSubImage3D": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glCopyBufferSubData": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glCreateProgram": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glCreateShader": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glCullFace": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glDebugMessageCallback": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glDebugMessageControl": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glDebugMessageInsert": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glDeleteProgram": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 21000,
+    "us2": 0
+  },
+  "glDeleteShader": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 21000,
+    "us2": 0
+  },
+  "glDeleteSync": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 22000,
+    "us2": 0
+  },
+  "glDepthFunc": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glDepthMask": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glDepthRange": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glDetachShader": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glDisable": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glDisableVertexAttribArray": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glDisablei": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glDrawArrays": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glDrawArraysInstanced": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glDrawArraysInstancedBaseInstance": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glDrawBuffers": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glDrawElements": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glDrawElementsBaseVertex": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glDrawElementsInstanced": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glDrawElementsInstancedBaseVertex": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glDrawElementsInstancedBaseVertexBaseInstance": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glDrawRangeElements": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glDrawRangeElementsBaseVertex": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glEnable": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glEnableVertexAttribArray": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glEnablei": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glFenceSync": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glFinalCombinerInputNV": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glFinish": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glFlush": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glFramebufferRenderbuffer": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glFramebufferTexture": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glFramebufferTexture1D": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glFramebufferTexture2D": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glFramebufferTexture3D": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glFramebufferTextureLayer": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glFrontFace": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glFrustum": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glGenBuffers": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 22000
+  },
+  "glDeleteBuffers": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 3000,
+    "us2": 0
+  },
+  "glGenFramebuffers": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 16000,
+    "us2": 4000
+  },
+  "glDeleteFramebuffers": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 16000,
+    "us2": 0
+  },
+  "glGenQueries": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 22000
+  },
+  "glDeleteQueries": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 18000,
+    "us2": 0
+  },
+  "glGenRenderbuffers": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 17000,
+    "us2": 1000
+  },
+  "glDeleteRenderbuffers": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 16000,
+    "us2": 0
+  },
+  "glGenSamplers": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 21000
+  },
+  "glDeleteSamplers": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 16000,
+    "us2": 0
+  },
+  "glGenTextures": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 17000,
+    "us2": 5000
+  },
+  "glDeleteTextures": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 8000,
+    "us2": 0
+  },
+  "glGenVertexArrays": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 20000
+  },
+  "glDeleteVertexArrays": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 14000,
+    "us2": 0
+  },
+  "glGenerateMipmap": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glGetActiveUniform": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glGetActiveUniformBlockName": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glGetActiveUniformBlockiv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glGetAttachedShaders": {
+    "err1": -2,
+    "err2": -2,
+    "us1": 0,
+    "us2": 0
+  },
+  "glGetAttribLocation": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glGetBooleani_v": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glGetBufferParameteriv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glGetBufferSubData": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glGetCompressedTexImage": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 17000,
+    "us2": 16000
+  },
+  "glGetDebugMessageLog": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glGetError": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glGetFloatv": {
+    "err1": 1280,
+    "err2": 1280,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glGetFragDataIndex": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 16000,
+    "us2": 16000
+  },
+  "glGetFramebufferAttachmentParameteriv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glGetIntegeri_v": {
+    "err1": 1280,
+    "err2": 1280,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glGetIntegerv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glGetMultisamplefv": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glGetProgramInfoLog": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glGetProgramiv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glGetQueryObjectiv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 17000,
+    "us2": 17000
+  },
+  "glGetQueryObjectui64v": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 16000,
+    "us2": 17000
+  },
+  "glGetQueryObjectuiv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 17000,
+    "us2": 16000
+  },
+  "glGetQueryiv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 16000,
+    "us2": 17000
+  },
+  "glGetRenderbufferParameteriv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glGetSamplerParameterIiv": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glGetSamplerParameterIuiv": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glGetSamplerParameterfv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glGetSamplerParameteriv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glGetShaderInfoLog": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glGetShaderSource": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glGetShaderSourceImpl": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glGetShaderiv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 32000,
+    "us2": 34000
+  },
+  "glGetString": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 17000,
+    "us2": 16000
+  },
+  "glGetStringi": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 17000,
+    "us2": 17000
+  },
+  "glGetSynciv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 16000,
+    "us2": 17000
+  },
+  "glGetTexImage": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glGetTexLevelParameteriv": {
+    "err1": 1281,
+    "err2": 1281,
+    "us1": 50000,
+    "us2": 50000
+  },
+  "glGetTexParameteriv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glGetTextureLevelParameteriv": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glGetTextureParameteriv": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glGetUniformBlockIndex": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glGetUniformLocation": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glGetUniformfv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 17000,
+    "us2": 17000
+  },
+  "glGetUniformiv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 17000,
+    "us2": 16000
+  },
+  "glGetUniformuiv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 16000,
+    "us2": 17000
+  },
+  "glHint": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glIsEnabledi": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glIsFramebuffer": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glIsQuery": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 16000,
+    "us2": 17000
+  },
+  "glIsRenderbuffer": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glIsSampler": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glIsSync": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 17000,
+    "us2": 17000
+  },
+  "glLightf": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glLightfv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 32000
+  },
+  "glLineWidth": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glLinkProgram": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glLoadIdentity": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glMapBufferRange": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glMaterialf": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 17000,
+    "us2": 33000
+  },
+  "glMaterialfv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glMatrixMode": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glMinSampleShading": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glMultMatrixf": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glMultiDrawElementsBaseVertex": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 66000,
+    "us2": 67000
+  },
+  "glOrtho": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glPixelStorei": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glPointParameterf": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glPointParameterfv": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glPointParameteri": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glPointParameteriv": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glPolygonMode": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glPolygonOffset": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glPolygonOffsetClamp": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glPopMatrix": {
+    "err1": 1284,
+    "err2": 1284,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glPushMatrix": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glQueryCounter": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 16000,
+    "us2": 17000
+  },
+  "glReadBuffer": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glReadPixels": {
+    "err1": 1280,
+    "err2": 1280,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glRenderbufferStorage": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 50000,
+    "us2": 50000
+  },
+  "glRenderbufferStorageMultisample": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glRotatef": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glSampleCoverage": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glSamplerParameterIiv": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glSamplerParameterIuiv": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glSamplerParameterf": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glSamplerParameterfv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glSamplerParameteri": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glSamplerParameteriv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glScalef": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glScissor": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glShadeModel": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glShaderSource": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glStencilFunc": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glStencilFuncSeparate": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glStencilMask": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glStencilMaskSeparate": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glStencilOp": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 18000
+  },
+  "glStencilOpSeparate": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glTexBuffer": {
+    "err1": 1282,
+    "err2": 1282,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glTexBufferARB": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glTexBufferRange": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glTexBufferRangeARB": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glTexImage2D": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glTexImage2DMultisample": {
+    "err1": 1280,
+    "err2": 1280,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glTexImage3D": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glTexImage3DMultisample": {
+    "err1": 1280,
+    "err2": 1280,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glTexParameterf": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glTexParameteri": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glTexStorage1D": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 50000,
+    "us2": 50000
+  },
+  "glTexStorage2D": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 50000,
+    "us2": 52000
+  },
+  "glTexStorage2DMultisample": {
+    "err1": 1280,
+    "err2": 1280,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glTexStorage3D": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 50000,
+    "us2": 50000
+  },
+  "glTexStorage3DMultisample": {
+    "err1": 1280,
+    "err2": 1280,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glTexSubImage2D": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glTexSubImage3D": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glTextureBarrier": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glTextureBarrierNV": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glTransformFeedbackVaryings": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glTranslatef": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glUniform1f": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glUniform1fv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glUniform1i": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glUniform1iv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 35000,
+    "us2": 32000
+  },
+  "glUniform1uiv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glUniform2f": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 34000
+  },
+  "glUniform2fv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glUniform2i": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glUniform2iv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 32000,
+    "us2": 34000
+  },
+  "glUniform2uiv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glUniform3f": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 34000
+  },
+  "glUniform3fv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 35000,
+    "us2": 32000
+  },
+  "glUniform3i": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glUniform3iv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glUniform3uiv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 35000
+  },
+  "glUniform4f": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 30000,
+    "us2": 34000
+  },
+  "glUniform4fv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 16000,
+    "us2": 34000
+  },
+  "glUniform4i": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glUniform4iv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 35000
+  },
+  "glUniform4uiv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glUniformBlockBinding": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glUniformMatrix2fv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glUniformMatrix3fv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glUniformMatrix4fv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glUseProgram": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glValidateProgram": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glVersionMode": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glVertexAttrib1d": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glVertexAttrib1dv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glVertexAttrib1f": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glVertexAttrib1fv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glVertexAttrib2d": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glVertexAttrib2dv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glVertexAttrib2f": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glVertexAttrib2fv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glVertexAttrib3d": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glVertexAttrib3dv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glVertexAttrib3f": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 31000,
+    "us2": 33000
+  },
+  "glVertexAttrib3fv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 32000
+  },
+  "glVertexAttrib4d": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glVertexAttrib4dv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glVertexAttrib4f": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glVertexAttrib4fv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glVertexAttribDivisor": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glVertexAttribI4i": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glVertexAttribI4iv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glVertexAttribI4ui": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glVertexAttribI4uiv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glVertexAttribIPointer": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glVertexAttribPointer": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glViewport": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glWaitSync": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 17000,
+    "us2": 16000
+  },
+  "glXChooseFBConfig": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXChooseVisual": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXCreateContext": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXCreateContextAttribsARB": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXDestroyContext": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXGetClientString": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXGetConfig": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXGetCurrentContext": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXGetCurrentDrawable": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXGetFBConfigAttrib": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXGetFBConfigs": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXGetVisualFromFBConfig": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXIsDirect": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXMakeContextCurrent": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXMakeCurrent": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXQueryExtension": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXQueryExtensionsString": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXQueryServerString": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXQueryVersion": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXSwapBuffers": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXSwapIntervalEXT": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXWaitGL": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXWaitX": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "traceProc": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glAlphaFunc": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glColor4ub": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glFogf": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glFogfv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glFogi": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glFogiv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glLoadMatrixf": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glLoadMatrixd": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glMultMatrixd": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glTexEnvf": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glTexEnvfv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glTexEnvi": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glTexEnviv": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glClientActiveTextureARB": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glMultiTexCoord2fARB": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 34000,
+    "us2": 33000
+  },
+  "glEnableClientState": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glVertexPointer": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glColorPointer": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glTexCoordPointer": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 34000
+  },
+  "glDisableClientState": {
+    "err1": 0,
+    "err2": 0,
+    "us1": 33000,
+    "us2": 33000
+  },
+  "glXCopyContext": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXCreatePbuffer": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXDestroyPbuffer": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXGetCurrentReadDrawable": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXGetSelectedEvent": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXQueryContext": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXQueryDrawable": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  },
+  "glXSelectEvent": {
+    "err1": -1,
+    "err2": -1,
+    "us1": 0,
+    "us2": 0
+  }
+}

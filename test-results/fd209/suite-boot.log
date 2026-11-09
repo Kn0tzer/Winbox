@@ -1,0 +1,18 @@
+Browser tests (Playwright, needs box):
+  PASS boot32-vkboot (61612ms)
+  PASS boot64-smoke (448586ms)
+[probe-slots] waiting for heavy slot: queue position 1/1; holders: none
+[probe-slots] waiting for heavy slot: queue position 1/1; holders: none
+[probe-slots] waiting for heavy slot: queue position 1/1; holders: none
+  FAIL celeste-boot (525928ms)
+    ASSERT FAILED: Celeste must present a visible game frame
+      expected > 10000, got: 0
+      expected > 10000, got: 0
+        at checkGreaterThan (file:///home/ubuntu/winbox-project/worktrees/wt-fd209/web/tests/suite/lib/assert.mjs:40:11)
+        at CelesteBootTest.run (file:///home/ubuntu/winbox-project/worktrees/wt-fd209/web/tests/suite/browser/celeste-boot.test.mjs:31:5)
+
+==================================================
+SUITE RESULT: 2 passed, 1 failed
+Failed tests:
+  - celeste-boot [browser]
+==================================================

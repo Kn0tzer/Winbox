@@ -1,0 +1,6 @@
+Browser tests (Playwright, needs box):
+  PASS fna-runtime (53941ms)
+
+==================================================
+SUITE RESULT: 1 passed, 0 failed
+==================================================
