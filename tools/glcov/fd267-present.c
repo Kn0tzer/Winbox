@@ -61,6 +61,7 @@ typedef char GLchar;
 #define GL_COMPILE_STATUS 0x8B81
 #define GL_LINK_STATUS 0x8B82
 #define GL_NO_ERROR 0
+#define GL_READ_FRAMEBUFFER 0x8CA8
 #define GL_FALSE 0
 #define GL_TRUE 1
 
@@ -90,6 +91,7 @@ typedef void (APIENTRY *PFN_glDrawElements)(GLenum, GLsizei, GLenum, const void 
 typedef void (APIENTRY *PFN_glReadPixels)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *);
 typedef GLenum (APIENTRY *PFN_glGetError)(void);
 typedef const GLubyte * (APIENTRY *PFN_glGetString)(GLenum);
+typedef void (APIENTRY *PFN_glBindFramebuffer)(GLenum, GLuint);
 typedef void (APIENTRY *PFN_glDrawElementsBaseVertex)(GLenum, GLsizei, GLenum, const void *, GLint);
 typedef void (APIENTRY *PFN_glDrawElementsInstancedBaseVertex)(GLenum, GLsizei, GLenum, const void *, GLsizei, GLint);
 typedef void (APIENTRY *PFN_glDrawElementsInstancedBaseVertexBaseInstance)(GLenum, GLsizei, GLenum, const void *, GLsizei, GLint, GLuint);
@@ -119,6 +121,7 @@ static PFN_glBindVertexArray pglBindVertexArray;
 static PFN_glVertexAttribPointer pglVertexAttribPointer;
 static PFN_glEnableVertexAttribArray pglEnableVertexAttribArray;
 static PFN_glDrawElements pglDrawElements;
+static PFN_glBindFramebuffer pglBindFramebuffer;
 static PFN_glReadPixels pglReadPixels;
 static PFN_glGetError pglGetError;
 static PFN_glGetString pglGetString;
@@ -176,6 +179,10 @@ static int failures = 0;
 static void check(const char *name, int want_a_red, int want_b_red) {
     GLubyte pa[4] = {0, 0, 0, 0}, pb[4] = {0, 0, 0, 0};
     GLenum e = pglGetError();
+    /* Route the read through the guest's default-framebuffer binding:
+     * the bridge keeps the guest's draws on its own offscreen FBO, and
+     * its readback handler reads whatever READ binding is current. */
+    pglBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     pglReadPixels(120, 150, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pa);
     pglReadPixels(360, 150, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pb);
     int ok = (e == GL_NO_ERROR)
@@ -228,6 +235,7 @@ int main(void) {
     LOAD(glGenVertexArrays); LOAD(glBindVertexArray);
     LOAD(glVertexAttribPointer); LOAD(glEnableVertexAttribArray);
     LOAD(glDrawElements); LOAD(glReadPixels); LOAD(glGetError); LOAD(glGetString);
+    LOAD(glBindFramebuffer);
     LOAD(glDrawElementsBaseVertex);
     LOAD(glDrawElementsInstancedBaseVertex);
     LOAD_OPTIONAL(glDrawElementsInstancedBaseVertexBaseInstance);
@@ -279,6 +287,22 @@ int main(void) {
      * only if bound while the VAO is bound — rebind explicitly). */
     pglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
     pglGetError(); /* drain setup errors */
+
+    /* Bisection: clear to blue and read back before any draw. If the
+     * pixels are not blue, the readback path itself is broken and no
+     * draw result can be trusted; if they are blue, readback works and
+     * any later black means the draw did not paint. */
+    pglClearColor(0, 0, 1, 1);
+    pglClear(GL_COLOR_BUFFER_BIT);
+    {
+        GLubyte pa[4] = {0, 0, 0, 0}, pb[4] = {0, 0, 0, 0};
+        pglBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+        pglReadPixels(120, 150, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pa);
+        pglReadPixels(360, 150, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pb);
+        fprintf(stderr, "FD267: clearcheck A=(%u,%u,%u) B=(%u,%u,%u) %s\n",
+                pa[0], pa[1], pa[2], pb[0], pb[1], pb[2],
+                (pa[2] > 200 && pb[2] > 200) ? "PASS" : "FAIL");
+    }
 
     /* 0. Control: plain glDrawElements of triangle B directly
      * (indices {3,4,5} at EBO offset 6). If this cannot see red at B,
