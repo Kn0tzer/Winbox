@@ -1237,7 +1237,13 @@ API void glTexSubImage3D(GLenum target, GLint level, GLint x, GLint y, GLint z, 
     GL64Args a={{0}}; a.a[0]=target; a.a[1]=(uint64_t)(uint32_t)level; a.a[2]=(uint64_t)(uint32_t)x; a.a[3]=(uint64_t)(uint32_t)y;
     a.a[4]=(uint64_t)(uint32_t)z; a.a[5]=(uint64_t)(uint32_t)w; a.a[6]=(uint64_t)(uint32_t)h; a.a[7]=(uint64_t)(uint32_t)d;
     a.a[8]=fmt; a.a[9]=type; a.a[10]=(uint64_t)(uintptr_t)px; (void)gl64_trap(GL64_fn_glTexSubImage3D,&a); }
-API void glCompressedTexImage3D(GLenum target, GLint level, GLenum ifmt, GLsizei w, GLsizei h, GLsizei d, GLsizei imageSize, const void* data){
+// FD-208: the desktop signature carries a border parameter between depth
+// and imageSize. This entry used to omit it, so every caller's imageSize
+// landed in the border slot and the data pointer became the imageSize
+// value (the bridge then uploaded nothing and the two harness calls
+// disagreed). Border itself is not forwarded: it must be 0 in modern GL
+// and the bridge host call already passes 0.
+API void glCompressedTexImage3D(GLenum target, GLint level, GLenum ifmt, GLsizei w, GLsizei h, GLsizei d, GLint border, GLsizei imageSize, const void* data){
     GL64Args a={{0}}; a.a[0]=target; a.a[1]=(uint64_t)(uint32_t)level; a.a[2]=ifmt; a.a[3]=(uint64_t)(uint32_t)w; a.a[4]=(uint64_t)(uint32_t)h;
     a.a[5]=(uint64_t)(uint32_t)d; a.a[6]=(uint64_t)(uint32_t)imageSize; a.a[7]=(uint64_t)(uintptr_t)data; (void)gl64_trap(GL64_fn_glCompressedTexImage3D,&a); }
 API void glCompressedTexSubImage3D(GLenum target, GLint level, GLint x, GLint y, GLint z, GLsizei w, GLsizei h, GLsizei d, GLenum fmt, GLsizei imageSize, const void* data){
@@ -1245,7 +1251,7 @@ API void glCompressedTexSubImage3D(GLenum target, GLint level, GLint x, GLint y,
     a.a[4]=(uint64_t)(uint32_t)z; a.a[5]=(uint64_t)(uint32_t)w; a.a[6]=(uint64_t)(uint32_t)h; a.a[7]=(uint64_t)(uint32_t)d;
     a.a[8]=fmt; a.a[9]=(uint64_t)(uint32_t)imageSize; a.a[10]=(uint64_t)(uintptr_t)data; (void)gl64_trap(GL64_fn_glCompressedTexSubImage3D,&a); }
 API void glTexImage3DEXT(GLenum t, GLint l, GLenum i, GLsizei w, GLsizei h, GLsizei d, GLint b, GLenum f, GLenum ty, const void* p){ glTexImage3D(t,l,i,w,h,d,b,f,ty,p); }
-API void glCompressedTexImage3DARB(GLenum t, GLint l, GLenum i, GLsizei w, GLsizei h, GLsizei d, GLsizei s, const void* p){ glCompressedTexImage3D(t,l,i,w,h,d,s,p); }
+API void glCompressedTexImage3DARB(GLenum t, GLint l, GLenum i, GLsizei w, GLsizei h, GLsizei d, GLint b, GLsizei s, const void* p){ glCompressedTexImage3D(t,l,i,w,h,d,b,s,p); }
 API void glTexImage2DMultisample(GLenum t, GLsizei s, GLenum i, GLsizei w, GLsizei h, GLboolean fixed){
     GL64Args a={{0}}; a.a[0]=t; a.a[1]=(uint64_t)(uint32_t)s; a.a[2]=i; a.a[3]=(uint64_t)(uint32_t)w; a.a[4]=(uint64_t)(uint32_t)h; a.a[5]=fixed; (void)gl64_trap(GL64_fn_glTexImage2DMultisample,&a); }
 API void glTexImage3DMultisample(GLenum t, GLsizei s, GLenum i, GLsizei w, GLsizei h, GLsizei d, GLboolean fixed){
