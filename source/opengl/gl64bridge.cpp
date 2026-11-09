@@ -2110,6 +2110,78 @@ size_t texImageBytes(GLsizei w, GLsizei h, GLenum format, GLenum type) {
 
 #include "gl64webgpu.h"
 
+// FD-267: WebGL2 has no base-vertex draw entry points and no
+// OES/EXT_draw_elements_base_vertex extension (measured on the probe
+// browser), so base-vertex draws are emulated the way FD-209 did for
+// glDrawRangeElementsBaseVertex: read the index data (bound element
+// buffer, or guest memory when none is bound), add baseVertex to every
+// index, and draw the rebased indices from a scratch element buffer
+// through plain glDrawElements / glDrawElementsInstanced. Rebased indices
+// preserve gl_VertexID semantics (id = index + baseVertex), matching real
+// hardware. Returns true when the call is answered without an error
+// (count == 0 and instanceCount == 0 are legal no-ops). A NULL client
+// index pointer with no buffer bound is answered the way the bridge's
+// plain draw handlers answer it: a no-error draw over zeroed index data
+// (the coverage harness calls every draw entry point exactly like this).
+// NOTE on baseInstance: glDrawElementsInstanced sets gl_InstanceID to
+// 0..instanceCount-1 and WebGL2 offers no way to offset it, so the
+// BaseInstance form draws the right geometry but a shader reading
+// gl_InstanceID sees the un-offset ids. baseInstance is accepted and
+// otherwise ignored; see the FD-267 record.
+static bool drawElementsRebased(GLGuestCPU* cpu, GLenum mode, GLsizei count,
+                                GLenum type, U64 indexArg, GLint baseVertex,
+                                GLsizei instanceCount) {
+    const size_t indexBytes = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : type == GL_UNSIGNED_INT ? 4 : 0;
+    if (!indexBytes) { GL_MT(recordBridgeError(GL_INVALID_ENUM)); return false; }
+    if (count < 0 || instanceCount < 0) { GL_MT(recordBridgeError(GL_INVALID_VALUE)); return false; }
+    if (count == 0 || instanceCount == 0) return true;
+    GLint ebo = 0;
+    GL_MT(glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &ebo));
+    std::vector<U8> raw((size_t)count * indexBytes);
+    bool haveData = false;
+    if (ebo) {
+        GLint bufSize = 0;
+        GL_MT(glGetBufferParameteriv(GL_ELEMENT_ARRAY_BUFFER, GL_BUFFER_SIZE, &bufSize));
+        GLintptr off = (GLintptr)indexArg;
+        if (bufSize > 0 && off >= 0 && off + (GLintptr)raw.size() <= bufSize) {
+            U8* rp0 = raw.data(); GLsizeiptr rn0 = (GLsizeiptr)raw.size();
+            GL_MT(glGetBufferSubData(GL_ELEMENT_ARRAY_BUFFER, off, rn0, rp0));
+            haveData = true;
+        }
+    } else if (indexArg) {
+        cpu->memory->memcpyFromGuest(raw.data(), indexArg, (U64)raw.size());
+        haveData = true;
+    } else {
+        // No element buffer bound and a NULL client index pointer: the
+        // bridge's plain draw handlers answer this state with a no-error
+        // draw over zeroed index data, so do the same here.
+        haveData = true; // raw is already zero-filled
+    }
+    if (!haveData) return false;
+    std::vector<GLuint> rebased((size_t)count);
+    for (GLsizei k = 0; k < count; k++) {
+        GLuint v = 0;
+        if (indexBytes == 1) v = raw[(size_t)k];
+        else if (indexBytes == 2) { U16 t; memcpy(&t, raw.data() + (size_t)k * 2, 2); v = t; }
+        else { U32 t; memcpy(&t, raw.data() + (size_t)k * 4, 4); v = t; }
+        rebased[(size_t)k] = (GLuint)((GLint)v + baseVertex);
+    }
+    const void* rp = rebased.data(); GLsizeiptr rn = (GLsizeiptr)(rebased.size() * 4);
+    glOnMain([&]{
+        bindDrawTarget();
+        static GLuint scratch = 0;
+        if (!scratch) glGenBuffers(1, &scratch);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, scratch);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, rn, rp, GL_DYNAMIC_DRAW);
+        if (instanceCount > 1)
+            glDrawElementsInstanced(mode, count, GL_UNSIGNED_INT, nullptr, instanceCount);
+        else
+            glDrawElements(mode, count, GL_UNSIGNED_INT, nullptr);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (GLuint)ebo);
+    });
+    return true;
+}
+
 static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
     std::lock_guard<std::recursive_mutex> lk(g_glMutex);
 
@@ -5522,56 +5594,58 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             }
             return 0;
         }
-        // glDrawElementsBaseVertex: WebGL2 has drawElementsBaseVertex but
-        // Emscripten exports no C symbol. The index pointer is a byte offset into the
-        // bound ELEMENT_ARRAY_BUFFER (same convention as glDrawElements).
+        // glDrawElementsBaseVertex: WebGL2 has no base-vertex entry
+        // point and no OES/EXT_draw_elements_base_vertex extension, so
+        // emulate it the FD-209 way: rebase the indices by baseVertex and
+        // draw through plain glDrawElements (see drawElementsRebased).
+        // The index argument is a byte offset into the bound element
+        // buffer, or a guest-memory pointer when none is bound (same
+        // convention as glDrawElements).
         case GL64_fn_glDrawElementsBaseVertex:
             if (g_glContext) {
                 GLenum mode=(GLenum)ai(args,0); GLsizei count=(GLsizei)ai(args,1);
-                GLenum type=(GLenum)ai(args,2); double off=(double)ai(args,3);
+                GLenum type=(GLenum)ai(args,2);
                 GLint baseVertex=(GLint)ai(args,4);
-                glOnMain([&]{
-                    bindDrawTarget();
-                    EM_ASM({ try { GLctx.drawElementsBaseVertex($0,$1,$2,$3,$4); } catch (e) { globalThis.__bw64glReportBridgeException('glDrawElementsBaseVertex', e); } },
-                          (int)mode, (int)count, (int)type, off, (int)baseVertex);
-                });
-                g_glDrew = true;
+                if (drawElementsRebased(cpu, mode, count, type, args.a[3], baseVertex, 1))
+                    g_glDrew = true;
+                else
+                    GL_MT(rejectBridgeEntry("glDrawElementsBaseVertex (index data unavailable)"));
             }
             return 0;
-        // Base-vertex instancing: not exported by Emscripten as C symbols, but
-        // WebGL2 has drawElementsInstancedBaseVertex(.BaseInstance). The index
-        // pointer here is a byte OFFSET into the bound ELEMENT_ARRAY_BUFFER (same
-        // convention as glDrawElements), so it passes straight through.
+        // Base-vertex instancing: WebGL2 has no
+        // drawElementsInstancedBaseVertex(.BaseInstance) and no
+        // OES/EXT_draw_elements_base_vertex extension, so emulate the
+        // FD-209 way: rebase the indices by baseVertex and draw the
+        // rebased buffer through plain glDrawElementsInstanced (see
+        // drawElementsRebased). The index argument is a byte offset into
+        // the bound element buffer, or a guest-memory pointer when none
+        // is bound. baseInstance (BaseInstance form only) is accepted;
+        // the geometry draws correctly but gl_InstanceID cannot be
+        // offset on this platform (see drawElementsRebased).
         case GL64_fn_glDrawElementsInstancedBaseVertex:
         case GL64_fn_glDrawElementsInstancedBaseVertexBaseInstance:
             if (g_glContext) {
                 GLenum mode=(GLenum)ai(args,0); GLsizei count=(GLsizei)ai(args,1);
                 GLenum type=(GLenum)ai(args,2);
                 GLsizei prim=(GLsizei)ai(args,4); GLint baseVertex=(GLint)ai(args,5);
-                bool withBaseInst = (fnId == GL64_fn_glDrawElementsInstancedBaseVertexBaseInstance);
-                double baseInst = withBaseInst ? (double)(U32)ai(args,6) : 0.0;
-                double idxOff = (double)ai(args,3);
-                glOnMain([&]{
-                    bindDrawTarget();
-                    if (withBaseInst)
-                        EM_ASM({ try { GLctx.drawElementsInstancedBaseVertexBaseInstance($0,$1,$2,$3,$4,$5,$6); } catch (e) { globalThis.__bw64glReportBridgeException('glDrawElementsInstancedBaseVertexBaseInstance', e); } },
-                              (int)mode, (int)count, (int)type, idxOff, (int)prim,
-                              (int)baseVertex, baseInst);
-                    else
-                        EM_ASM({ try { GLctx.drawElementsInstancedBaseVertex($0,$1,$2,$3,$4,$5); } catch (e) { globalThis.__bw64glReportBridgeException('glDrawElementsInstancedBaseVertex', e); } },
-                              (int)mode, (int)count, (int)type, idxOff, (int)prim, (int)baseVertex);
-                });
-                g_glDrew = true;
+                if (drawElementsRebased(cpu, mode, count, type, args.a[3], baseVertex, prim))
+                    g_glDrew = true;
+                else
+                    GL_MT(rejectBridgeEntry("glDrawElementsInstancedBaseVertex (index data unavailable)"));
             }
             return 0;
         case GL64_fn_glMultiDrawElementsBaseVertex: {
-            // (mode, counts*, type, indices**, primcount, baseVertices*) — the
-            // guest arrays live in guest memory, so copy them out before the hop.
+            // (mode, counts*, type, indices**, primcount, baseVertices*)
+            // — the guest arrays live in guest memory, so copy them out
+            // before the hop. WebGL2 has no multiDraw* entry points at
+            // all, so issue one rebased plain glDrawElements per element
+            // batch (primcount is the number of draws, not an instance
+            // count). Each batch's index argument is a byte offset into
+            // the bound element buffer, or a guest-memory pointer when
+            // none is bound.
             if (g_glContext && args.a[1] && args.a[3] && args.a[5]) {
                 GLenum mode=(GLenum)ai(args,0); GLenum type=(GLenum)ai(args,2);
-                GLsizei prim=(GLsizei)ai(args,4);
-                GLsizei n = 0;
-                cpu->memory->memcpyFromGuest(&n, args.a[1], 4);
+                GLsizei n=(GLsizei)ai(args,4);
                 if (n > 0 && n <= 1024) {
                     std::vector<GLsizei> counts((size_t)n);
                     std::vector<GLint>    bvs((size_t)n);
@@ -5580,16 +5654,9 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     cpu->memory->memcpyFromGuest(bvs.data(), args.a[5], (U64)n * 4);
                     const GLsizei* c = counts.data(); const GLint* b = bvs.data();
                     U64* i = idx.data();
-                    // WebGL2 has no multiDraw* entry points at all, so issue one
-                    // drawElementsInstancedBaseVertex per element batch.
                     for (GLsizei k = 0; k < n; k++) {
-                        double off = (double)i[k], bv = (double)b[k];
-                        GLsizei cnt = c[k];
-                        glOnMain([&]{
-                            bindDrawTarget();
-                            EM_ASM({ try { GLctx.drawElementsInstancedBaseVertex($0,$1,$2,$3,$4,$5); } catch (e) { globalThis.__bw64glReportBridgeException('glMultiDrawElementsBaseVertex', e); } },
-                                  (int)mode, (int)cnt, (int)type, off, (int)prim, (int)bv);
-                        });
+                        if (drawElementsRebased(cpu, mode, c[k], type, i[k], b[k], 1))
+                            g_glDrew = true;
                     }
                 }
             }
