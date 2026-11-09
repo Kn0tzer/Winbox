@@ -25,7 +25,16 @@ export default class Boot64SmokeTest extends ProbeTest {
     // the booted cmd, its entry point runs (the echo prints), and the
     // window station comes up.
     await this.waitForLog(page, /user32\.dll/i, 240000);
-    await this.waitForLog(page, /^log: vkboot(?:\s*$|[0-9a-f]{4}: )/i, 240000);
+    // FD-264: the echo wait is 360s, not 240s. The 64-bit boot got slower
+    // in batch 11 — every fresh boot now installs the HID/XInput drivers
+    // (winehid/input/winexinput, nine installs) that batch 10 never did,
+    // and the booted command shell starts ~2 minutes later than it did.
+    // Measured live on the batch-12 build (2026-11-08): user32 at 66s,
+    // echo printed at 362s (user32+296s) and the shell exited 0 — the
+    // guest was never stuck, the 240s budget simply expired 56s before
+    // the echo landed. 360s covers the measured 296s with margin; the
+    // boot-latency itself is FD-26's territory, not this guard's.
+    await this.waitForLog(page, /^log: vkboot(?:\s*$|[0-9a-f]{4}: )/i, 360000);
     await this.waitForLog(page, /create_winstation/i, 240000);
   }
 }
