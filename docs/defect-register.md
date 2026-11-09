@@ -16906,6 +16906,33 @@ its lane and is not a defect, for the stated reason:
   pass, js-unit 352 passed / 2 failed (only the two known bare-checkout
   artifacts) — the standing acceptance shape. Record:
   `docs/reports/fd267-base-vertex-draws-20261109.md`.
+- **CL-200 — FD-268 closed.** Fixed on branch
+  `lane-fd268` (commit `3fc3cb7a5`): three separate mechanisms.
+  (1) Emscripten's glemu VAO emulation wipes the live
+  `ARRAY_BUFFER`/`ELEMENT_ARRAY_BUFFER` bindings on every VAO
+  bind/unbind and replays only what was recorded while that VAO was
+  current, so the harness's setup order (bind buffers, bind VAO,
+  unbind VAO) lost both bindings — the bridge's `glBindVertexArray`
+  handler now restores the array buffer always and the default VAO's
+  element-array binding on unbind to VAO 0. (2) The guest shim
+  declared `glEnablei`/`glDisablei`/`glIsEnabledi` in trap order
+  `(index, cap)` instead of desktop order `(target, index)`, so the
+  cap arrived as 0 — the three signatures now match the desktop call
+  and pack the trap in ABI order; the 32-bit shim was regenerated
+  from it and both `libGL.so.1` binaries rebuilt. (3) This host's
+  WebGL2 `getIndexedParameter` raises `INVALID_ENUM` for every pname,
+  so `glGetBooleani_v` falls back to the scalar `getParameter` when
+  the indexed query errors or returns null. Proof: coverage on the
+  fixed build (334 handlers, RESULT 0) — at the default profile 8 of
+  the 10 named rows now answer 0/0 with 0 regressions across all 334
+  rows, and at the forced 2.1 profile all 334 rows are identical to
+  the batch-14 v21 baseline. The two remaining rows are correct
+  answers to the calls as reached: `glCopyBufferSubData` 1282 because
+  the harness never binds a buffer to `GL_COPY_WRITE_BUFFER`, and
+  `glMapBufferRange` 1282 because the bridge deliberately rejects
+  direct bridge calls (a trap cannot return a host pointer; the
+  supported path is the guest libGL's client-side mapping). Record:
+  `docs/reports/fd268-vao-indexed-state-20261109.md`.
 - **CL-20 — The native Vulkan bridge test harness
   aborted at the pipeline-cache assertions, so every
   later section never ran (was FD-50).** Fixed in
