@@ -11246,7 +11246,7 @@ do not close the entry until they land.
   reach the console one character at a time through
   a console host, so the test times out even though
   the guest's name resolution, connection, and HTTP
-  read all complete.** *(Medium — the capability
+  read all complete. CLOSED 2026-11-09 — see CL-194.** *(Medium — the capability
   works; its only end-to-end witness is blind, and
   any console program spawned the same way is
   suspect. Filed by the batch-11 merge lane,
@@ -16713,6 +16713,26 @@ its lane and is not a defect, for the stated reason:
   JS unit 353/1 (only the known bare-checkout artifact) were verified
   locally on this branch instead. Record:
   `docs/reports/fd264-boot64-smoke-20261108.md`.
+- **CL-194 — FD-265 closed.** Fixed on branch
+  `lane-fd265` (commit `cc6552ad2`): the page's synthetic DNS
+  (`web/network.mjs` `dnsResponse`) now answers NXDOMAIN for names
+  under the RFC 6761 special-use endings that can never resolve
+  (.invalid, .test, .example) instead of fabricating a synthetic
+  address for them. The filing's witness theory did not survive the
+  evidence: the harness has always reconstructed the console host's
+  ANSI repaint stream before matching, and in every gate console
+  (batches 11, 12, 13) the guest printed the full witness sequence
+  with `done=0` — the negative stage genuinely failed, because the
+  synthetic map handed the made-up name a connectable address
+  (172.29.2.0) and the relay stream open completed the guest's
+  connect locally before the relay's ENOTFOUND refusal arrived.
+  Proof: build of `cc6552ad2` "Browser export verified" (wasm
+  byte-identical to batch 13 — page-side fix only); `winsock-dns`
+  PASS (161,936 ms) with both architectures printing
+  `bad_gai=11001` and `done=1`; `winsock-http` PASS on the same
+  build; new unit test pins the NXDOMAIN refusal and fails on the
+  unfixed code. Record:
+  `docs/reports/fd265-winsock-dns-nxdomain-20261109.md`.
 - **CL-20 — The native Vulkan bridge test harness
   aborted at the pipeline-cache assertions, so every
   later section never ran (was FD-50).** Fixed in
