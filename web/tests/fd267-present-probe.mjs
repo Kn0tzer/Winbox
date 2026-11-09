@@ -59,7 +59,7 @@ try {
   }
   console.log("BOOTSTRAP COMPLETE");
   const spawn = await page.evaluate(() => window.bwRuntime.call("bw64_spawn", ["string", "string"],
-    ["/usr/lib/wine/wine64\\nZ:\\\\home\\\\username\\\\fd267-present.exe", "LD_LIBRARY_PATH=/home/username\\nBW64_GLVERSION=33"]));
+    ["/usr/lib/wine/wine64\nZ:\\\\home\\\\username\\\\fd267-present.exe", "LD_LIBRARY_PATH=/home/username\nBW64_GLVERSION=33"]));
   console.log("SPAWN", spawn);
   const until = Date.now() + timeout;
   let lastPrint = 0;

@@ -127,8 +127,12 @@ static PFN_glDrawElementsInstancedBaseVertex pglDrawElementsInstancedBaseVertex;
 static PFN_glDrawElementsInstancedBaseVertexBaseInstance pglDrawElementsInstancedBaseVertexBaseInstance;
 static PFN_glMultiDrawElementsBaseVertex pglMultiDrawElementsBaseVertex;
 
-#define LOAD(n) do { p##n = (PFN_##n)wglGetProcAddress(#n); \
-    if (!p##n) { fprintf(stderr, "fd267-present: no proc " #n "\n"); return 1; } } while (0)
+#define LOAD(n) do { \
+    p##n = (PFN_##n)(void*)wglGetProcAddress(#n); \
+    if (!p##n || (uintptr_t)p##n <= 4 || p##n == (PFN_##n)(intptr_t)-1) \
+        p##n = (PFN_##n)(void*)GetProcAddress(g_opengl, #n); \
+    if (!p##n || (uintptr_t)p##n <= 4 || p##n == (PFN_##n)(intptr_t)-1) { \
+        fprintf(stderr, "fd267-present: no proc " #n "\n"); return 1; } } while (0)
 
 static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcA(h, m, w, l);
