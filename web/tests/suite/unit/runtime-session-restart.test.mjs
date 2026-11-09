@@ -90,3 +90,54 @@ test('restarts are bounded: the final attempt does not navigate again', () => {
   assert.equal(last.navigations.length, 0);
   assert.ok(last.errors.some(t => /final boot attempt/.test(t)));
 });
+
+test('the shared scheduler schedules one restart with the caller reason (FD-266)', () => {
+  const h = harness();
+  runInNewContext('scheduleSessionBootRestart("prehandshake fault loop")', h.state);
+  assert.equal(h.timers.length, 1);
+  assert.equal(h.timers[0].ms, 20000);
+  assert.ok(h.errors.some(t => /prehandshake fault loop/.test(t)));
+  runInNewContext('scheduleSessionBootRestart("prehandshake fault loop")', h.state);
+  assert.equal(h.timers.length, 1, 'a second request must not schedule again');
+});
+
+test('the shared scheduler honors the session and readiness guards (FD-266)', () => {
+  for (const opts of [{ session: false }, { ready: true }]) {
+    const h = harness(opts);
+    runInNewContext('scheduleSessionBootRestart("prehandshake fault loop")', h.state);
+    assert.equal(h.timers.length, 0);
+  }
+});
+
+test('a forced restart schedules even outside a session or once ready (FD-266)', () => {
+  for (const opts of [{ session: false }, { ready: true }]) {
+    const h = harness(opts);
+    runInNewContext('scheduleSessionBootRestart("prehandshake fault loop", { force: true })', h.state);
+    assert.equal(h.timers.length, 1);
+    assert.equal(h.timers[0].ms, 20000);
+    assert.ok(h.errors.some(t => /prehandshake fault loop/.test(t)));
+  }
+});
+
+test('a forced restart is still gated on no window mapped (FD-266)', () => {
+  const h = harness({ session: false });
+  runInNewContext('stallWatchMapped = true', h.state);
+  runInNewContext('scheduleSessionBootRestart("prehandshake fault loop", { force: true })', h.state);
+  assert.equal(h.timers.length, 0, 'a mapped window means the start recovered; no restart');
+});
+
+test('a forced restart navigates even outside a session (FD-266)', () => {
+  const h = harness({ session: false });
+  runInNewContext('scheduleSessionBootRestart("prehandshake fault loop", { force: true })', h.state);
+  h.fire();
+  assert.equal(h.navigations.length, 1);
+  assert.equal(new URL(h.navigations[0]).searchParams.get('bwretry'), '1');
+});
+
+test('a forced restart is abandoned if a window maps during the confirm window (FD-266)', () => {
+  const h = harness({ session: false });
+  runInNewContext('scheduleSessionBootRestart("prehandshake fault loop", { force: true })', h.state);
+  runInNewContext('stallWatchMapped = true', h.state);
+  h.fire();
+  assert.equal(h.navigations.length, 0);
+});

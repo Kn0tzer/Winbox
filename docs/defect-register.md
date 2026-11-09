@@ -11214,7 +11214,7 @@ do not close the entry until they land.
 
 - **FD-264 — The 64-bit boot smoke test never sees
   its payload run: a freshly booted 64-bit `cmd`
-  does not print within the test's waits.** *(Medium
+  does not print within the test's waits. CLOSED 2026-11-08 — see CL-193.** *(Medium
   — the regression guard for 64-bit starting is
   blind, and 64-bit cold-start latency is
   implicated. Filed by the batch-11 merge lane,
@@ -11278,7 +11278,7 @@ do not close the entry until they land.
   the mechanism (why this spawn attaches a rendering
   console host in the composed tree) named.
 
-- **FD-266 — After the fault-containment fix ends a faulting guest process, the session dies silently: the launcher never restarts it and never reports the death.** *(Medium — the containment itself works; the session should surface the death or restart. Filed by the batch-12 deploy lane, 2026-11-08.)* In the batch-12 live acceptance the consumer browser program hit the FD-205 fault loop three times (runs a1, a2, b3 — identical signature: guest-memfault32, addr `0xfffffd08`, eip `0x10584384`); each time the containment refused delivery at count 130 (`delivered=0`) and the faulting guest process ended, exactly as designed — but the session then sat silent until the 900 s timeout: the preserved consoles carry zero `restart` lines, their last entries are the lazy-fetch lines at ~23–26 s, and the timeout screenshots are nearly dark. In batch 11 the same loop died differently (a worker RangeError killed the page), so this silent-after-containment shape is new to batch 12. Closing terms: a session whose guest process dies via containment either restarts the guest or reports the failure, proven by a live consumer run that hits the loop and then either maps or fails loudly instead of timing out silently.
+- **FD-266 — After the fault-containment fix ends a faulting guest process, the session dies silently: the launcher never restarts it and never reports the death. CLOSED 2026-11-08 — see CL-192.** *(Medium — the containment itself works; the session should surface the death or restart. Filed by the batch-12 deploy lane, 2026-11-08.)* In the batch-12 live acceptance the consumer browser program hit the FD-205 fault loop three times (runs a1, a2, b3 — identical signature: guest-memfault32, addr `0xfffffd08`, eip `0x10584384`); each time the containment refused delivery at count 130 (`delivered=0`) and the faulting guest process ended, exactly as designed — but the session then sat silent until the 900 s timeout: the preserved consoles carry zero `restart` lines, their last entries are the lazy-fetch lines at ~23–26 s, and the timeout screenshots are nearly dark. In batch 11 the same loop died differently (a worker RangeError killed the page), so this silent-after-containment shape is new to batch 12. Closing terms: a session whose guest process dies via containment either restarts the guest or reports the failure, proven by a live consumer run that hits the loop and then either maps or fails loudly instead of timing out silently.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -16684,6 +16684,35 @@ its lane and is not a defect, for the stated reason:
   checking-queue pipeline 64 adjudicated clean in the standard
   shape. Record:
   `docs/reports/fd263-stack-overflow-20261108.md`.
+- **CL-192 — FD-266 closed.** Fixed on branch
+  `lane-fd266` (commits `715983582` + `d01c3b84e`): the stall watchdog's
+  pre-handshake fault-loop report now schedules the shared clean-boot
+  restart, forced past the session guards (demos launch with
+  `session=0` and the session context is captured before any window
+  maps, so both guards vetoed a restart of a start that never mapped).
+  Proof: a live consumer run against the live site with the fixed
+  launcher served to the test browser hit the identical fault loop (65
+  memfault lines, addr `0xfffffd08`, eip `0x10584384`), reported it,
+  scheduled the restart, restarted at 39.5 s, and mapped at 75.7 s;
+  unit tests 27/27 pass. Record:
+  `docs/reports/fd266-silent-after-containment-20261108.md`.
+- **CL-193 — FD-264 closed.** Fixed on branch
+  `lane-fd264` (commit `8a3304602`): the 64-bit boot smoke test's vkboot
+  wait is 360 s instead of 240 s. The guest was never stuck — measured live
+  on the batch-12 build, the booted shell prints `vkboot` at user32+293–296 s
+  and exits 0; the boot got slower in batch 11 because every fresh 64-bit
+  boot now installs the HID/XInput drivers (nine installs) that batch 10
+  never did, so the 240 s budget expired ~60 s before the echo landed.
+  Proof: the test's own waits replayed against two saved live consoles
+  (`test-results/fd264-proof/live-boot64/live-g1-discovery/console.txt` and
+  `live-g1/console.txt`) both pass — vkboot at user32+296.2 s and
+  user32+293.2 s, winstation within 25 s after; replay
+  `test-results/fd264-proof/replay-boot64-waits.py` exit 0. The
+  checking-service pipeline was not run: blocked on disk (899 MB free
+  against the pipeline's ~929 MB workspace copy); citations 0 drift and
+  JS unit 353/1 (only the known bare-checkout artifact) were verified
+  locally on this branch instead. Record:
+  `docs/reports/fd264-boot64-smoke-20261108.md`.
 - **CL-20 — The native Vulkan bridge test harness
   aborted at the pipeline-cache assertions, so every
   later section never ran (was FD-50).** Fixed in
