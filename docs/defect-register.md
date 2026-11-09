@@ -10990,7 +10990,7 @@ do not close the entry until they land.
 
 - **FD-207 — The GL bridge's multisample-texture error path kills the session with an uncaught ReferenceError. CLOSED 2026-11-08 — see CL-190.** *(High)* In source/opengl/gl64bridge.cpp, the shared case for glTexImage2DMultisample / glTexImage3DMultisample / glTexStorage2DMultisample / glTexStorage3DMultisample wraps the WebGL call in an EM_ASM try/catch whose catch handler references the bare identifier is3D — a C++ variable that is never passed into the JS (the try block correctly uses $0 for the same value). is3D occurs exactly once in the shipped JS and is defined nowhere, so whenever the driver call throws, the catch itself throws ReferenceError: is3D is not defined, uncaught in the page, and the session dies — the exact outcome the case's own comment says the try/catch exists to prevent ("error swallow so a driver that refuses cannot poison wined3d's checks"). Measured 2026-11-07: the glcov run's glTexStorage2DMultisample call threw in the driver, the ReferenceError ended the run at 221 of 334 rows with the session dead. (The glTexImage pair shares the bridge case but never reaches it from the harness — no callable proc; see FD-209.) The harness now skips the two TexStorage rows (recorded -2, crashed). Closing terms: the catch uses the passed-in value (or an equivalent correct reference) so a driver refusal is reported and swallowed as designed; proven by a glcov run with the skips removed, completing with the four names answered. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-gl-20261107/console.log + summary.json (preserved on the lane tree) and docs/reports/vkgl-spec-coverage-20261106.md.
 
-- **FD-208 — Twenty-one GL handlers answer GL errors to the coverage harness's calls, and one answers inconsistently between calls.** *(Medium)* Measured 2026-11-07 on the completed glcov runs (the set is identical across both): GL_INVALID_OPERATION (1282) from glAttachShader, glBlitFramebuffer, glBufferData, glBufferSubData, glGetSamplerParameterIiv, glGetSamplerParameterIuiv, glGetTexImage, glPointParameterf, glPointParameterfv, glPointParameteri, glPointParameteriv, glSamplerParameterIiv, glSamplerParameterIuiv; GL_INVALID_ENUM (1280) from glBeginQuery, glEndQuery, glGetFloatv, glGetIntegeri_v, glReadPixels; GL_INVALID_VALUE (1281) from glEnd, glGetTexLevelParameteriv; GL_STACK_UNDERFLOW (1284) from glPopMatrix; and glCompressedTexImage3D, which answered 37442 on the first call and GL_NO_ERROR on the second (37442 is not a GL error code). The harness's arguments are valid-ish by design; per name, the fixing lane triages handler defect vs harness argument/state artifact — several are plausibly state artifacts of the harness's own sequence (glEnd with no matching begin in flight, glPopMatrix at stack bottom). Closing terms: per name, either a spec-correct answer to the harness's call, or a register note recording why the error is the correct answer to that call. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-gl3-20261107/glcov-results.json.
+- **FD-208 — Twenty-one GL handlers answer GL errors to the coverage harness's calls, and one answers inconsistently between calls. CLOSED 2026-11-09 — see CL-196.** *(Medium)* Measured 2026-11-07 on the completed glcov runs (the set is identical across both): GL_INVALID_OPERATION (1282) from glAttachShader, glBlitFramebuffer, glBufferData, glBufferSubData, glGetSamplerParameterIiv, glGetSamplerParameterIuiv, glGetTexImage, glPointParameterf, glPointParameterfv, glPointParameteri, glPointParameteriv, glSamplerParameterIiv, glSamplerParameterIuiv; GL_INVALID_ENUM (1280) from glBeginQuery, glEndQuery, glGetFloatv, glGetIntegeri_v, glReadPixels; GL_INVALID_VALUE (1281) from glEnd, glGetTexLevelParameteriv; GL_STACK_UNDERFLOW (1284) from glPopMatrix; and glCompressedTexImage3D, which answered 37442 on the first call and GL_NO_ERROR on the second (37442 is not a GL error code). The harness's arguments are valid-ish by design; per name, the fixing lane triages handler defect vs harness argument/state artifact — several are plausibly state artifacts of the harness's own sequence (glEnd with no matching begin in flight, glPopMatrix at stack bottom). Closing terms: per name, either a spec-correct answer to the harness's call, or a register note recording why the error is the correct answer to that call. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-gl3-20261107/glcov-results.json.
 
 - **FD-209 — Seventy-one GL entry points a Windows guest cannot resolve at all, though the harness carries rows for them.** *(Medium)* Measured 2026-11-07 on the completed glcov run: the harness resolves each name the way an application does (wglGetProcAddress first, then the opengl32 export table) and 103 of its 334 rows resolved to no callable pointer. Of those, 32 are glX* names and the traceProc plumbing row, which are not Windows-path entry points at all and are counted for completeness only. The other 71 are real GL entry points — among them the vertex-array-object family (glBindVertexArray, glGenVertexArrays, glDeleteVertexArrays), the sync family (glFenceSync, glClientWaitSync, glWaitSync, glDeleteSync, glIsSync, glGetSynciv), instanced drawing (glDrawArraysInstanced, glDrawElementsInstanced and the base-vertex/base-instance variants), glBufferStorage, glMapBufferRange, the glTexBuffer family, glGetStringi, the unsigned-uniform family, and the debug-message family (full list in the record) — so an application in the emulator cannot call them through the standard routes. (Two of the 71, glGetShaderSourceImpl and glVersionMode, are ABI-internal names rather than application entry points.) The likely mechanism, for the fixing lane to confirm: the guest context's reported GL version gates which entry points the loader will resolve. Closing terms: the named entry points resolve through the guest path and reach their bridge handlers (proven by the glcov rows recording real answers), or the register records per family why resolution is correctly absent. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-gl3-20261107/console.log ("no export" notes) and glcov-results.json.
 
@@ -16773,6 +16773,40 @@ its lane and is not a defect, for the stated reason:
   `docs/reports/fd206-vkcov-real-args-20261109.md`;
   evidence
   `test-results/bridge-coverage-fd206-fix3/`.
+- **CL-196 — FD-208 closed.** Fixed on branch
+  `lane-fd208` (commit `215d82519`): seventeen of the named handlers
+  were answering errors to legal calls and now answer GL_NO_ERROR —
+  the sampler integer getters/setters called WebGL methods that do
+  not exist, glBeginQuery/glEndQuery needed GL_SAMPLES_PASSED
+  translated to GL_ANY_SAMPLES_PASSED, the point-parameter family
+  was rejected by design and is now validated and stored
+  bridge-side, glBufferData/glBufferSubData needed
+  transform-feedback bindings lifted around the host write,
+  glGetFloatv copied one float regardless of pname, glGetTexImage
+  of a compressed texture now decodes the retained DXT payload in
+  software (a compressed texture is not colour-renderable, so the
+  scratch-framebuffer readback was incomplete), glEnd's flush ran
+  through the guest's current program whose attribute names the
+  fixed-function emulation cannot look up (it called
+  vertexAttribPointer(-1)) and now flushes with no program bound
+  when the current program has no `a_position`, and the guest
+  shim's glCompressedTexImage3D was missing its `border` parameter
+  — that one wild call also poisoned the measured answers of
+  glGetFloatv, glGetTexLevelParameteriv, glReadPixels and
+  glGetTexImage. Five names keep their measured errors as the
+  spec-correct answers to the harness's exact calls: glAttachShader
+  (the setup already attached the same shader; re-attach mandates
+  GL_INVALID_OPERATION), glBlitFramebuffer (identical
+  fully-overlapping self-blit of the default framebuffer),
+  glGetIntegeri_v (GL_MAX_VIEWPORT_DIMS is not an indexed
+  parameter), glPointParameteriv (0 is not a valid
+  GL_POINT_SPRITE_COORD_ORIGIN), glPopMatrix (every stack at depth
+  1). Proof: coverage run on the fixed build
+  (`test-results/bridge-coverage-fd208-final/`, 334 handlers,
+  passed) reproduces every answer above from the run's own results
+  file; the baseline run of the unmodified tree reproduced the
+  filing's table exactly, including 37442/0. Record:
+  `docs/reports/fd208-gl-error-answers-20261109.md`.
 - **CL-20 — The native Vulkan bridge test harness
   aborted at the pipeline-cache assertions, so every
   later section never ran (was FD-50).** Fixed in
