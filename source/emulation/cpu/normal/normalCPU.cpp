@@ -927,6 +927,15 @@ void NormalCPU::run() {
         }
         nextOp = getNextOp();
         if (!nextOp) {
+            // FD-271: a null fetch on a terminating thread is a retirement,
+            // not a fault (see platformThread). The terminating flag can be
+            // set after the check above by another thread's exit_group, so
+            // re-check here instead of fabricating a signal for a valid
+            // address. Returning leaves nextOp null and the run loop retires
+            // the thread.
+            if (thread->terminating) {
+                return;
+            }
             thread->seg_mapper(getEipAddress(), true, false, false);
             nextOp = getNextOp();
             if (!nextOp) {
