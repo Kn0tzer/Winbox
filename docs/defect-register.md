@@ -16979,6 +16979,21 @@ its lane and is not a defect, for the stated reason:
   mirror, restarted and verified) and are recorded in the record,
   not counted. Record:
   `docs/reports/fd271-chromium-boot-fault-loop-20261110.md`.
+  Light checks on the exact tip (`4b0669c66`), run directly because
+  the checking queue could not dispatch: citations exit 0 (352 rows,
+  0 mismatches); js-legacy 116 pass / 0 fail; js-unit 354 passed / 0
+  failed (the 2 known bare-checkout artifacts did not fail — the tree
+  carries a built dist/). The native suites and run-native were NOT
+  run on this tip: the queue killed four consecutive pipelines
+  (#78–#81) with "queue: task expired" and never dispatched a
+  workflow, despite an agent restart and a server restart. Root cause
+  found during the repair: the server sets no WOODPECKER_GRPC_SECRET,
+  so it generates a random one per start and a server restart
+  invalidates the agent's token (the agent must be restarted to
+  re-authenticate); the dispatch failure itself persisted after
+  re-authentication and is a queue-side problem for the coordinator.
+  The native-suite verdict on this tip is owed once the queue is
+  restored.
 - **CL-20 — The native Vulkan bridge test harness
   aborted at the pipeline-cache assertions, so every
   later section never ran (was FD-50).** Fixed in
