@@ -5890,6 +5890,21 @@ do not close the entry until they land.
   remains unattributed, as recorded above. The entry
   stays closed on its surfacing term (CL-127).
 
+  **Update (FD-271 lane, 2026-11-10):** the mechanism behind the
+  2026-11-02 instance's fault-loop shape is now identified and fixed
+  — see FD-271 (CL-201): the fault is delivered on an alternate
+  signal stack that was never set up (loop, commit `0647f59da`) and
+  the trigger is a terminating-flag first-fetch fabrication when
+  exit_group races thread creation (trigger, commit `2b84f4ead`).
+  The standing tally "3 in 60" no longer describes the consumer
+  series: the batch-15 deploy consumer series went 1 of 4 mapped
+  (the fault firing far more often), and the diagnostic runs on the
+  unfixed builds show 2 fired of 5 decisive runs. On the fixed
+  builds the consumer check is 3 of 3 mapped with 0 fault lines
+  (diag-run10/11/12), and the backport build is 1 of 1 mapped
+  (diag-run-b14-3). The entry stays closed on its surfacing term
+  (CL-127).
+
 - **FD-123 — A zero-length plain write on
   a 64-bit datagram socket queues nothing,
   where the host queues an empty
@@ -11288,7 +11303,7 @@ do not close the entry until they land.
 
 - **FD-270 — `glReadPixels` from the default framebuffer without a prior `glBindFramebuffer(GL_READ_FRAMEBUFFER, 0)` reads the host's leftover READ binding instead of the guest's drawn framebuffer.** *(Low)* The bridge's readback handler (`source/opengl/gl64bridge.cpp`, `GL64_fn_glReadPixels`) calls host `glReadPixels` on whatever READ binding is current, without first routing through the guest's read target the way the `glReadBuffer` handler does (`bindGuestTarget(GL_READ_FRAMEBUFFER)`). Measured 2026-11-09 by the FD-267 lane: a guest that draws and then reads back without ever binding its read target gets black pixels with err=0 (presentation probe runs `fd267-present4/5/6`), while the identical reads return the correct pixels once the guest binds READ 0 first (run `fd267-present7`, all PASS). Any guest that reads its own frame back without binding READ first gets wrong pixels. Fix shape: route the non-texture read through `bindGuestTarget(GL_READ_FRAMEBUFFER)` before the host call. Filed by the FD-267 lane, 2026-11-09.
 
-- **FD-271 — The Chromium boot dies in a repeated fault loop before the desktop is ready: a fresh clone child's first fault is delivered on an alternate signal stack that was never set up, so every signal-frame write faults and the loop kills the process.** *(High)* During the Chromium boot, a fresh chrome.exe child thread faults once at its first instruction (glibc `__clone` return, `0x10584384`) and the fault is delivered to Wine's SIGSEGV handler, which is installed with SA_ONSTACK. The thread never called sigaltstack — a fresh pthread starts with SS_DISABLE, sp=0, size=0 (verified on real Linux, which delivers such a signal on the normal stack) — but the 32-bit `KThread::runSignal` uses the alternate stack whenever SA_ONSTACK is set, computing the frame at `alternateStack + alternateStackSize - CONTEXT_SIZE` = `0xfffffd00`, so the first frame write faults at `0xfffffd08` and is re-delivered identically until FD-205 containment ends the process at count 129. Proven by the FD-271 lane's diagnostic build: `test-results/fd271/diag-run2/console.txt` — three attempts, each one trigger fault (`addr=0x10584384`, `pageFlags=0x25` MAPPED|EXEC|READ, op cached) then 64 logged write faults at `0xfffffd08`, containment at count 129; the diagnostic line reads `altSp=00000000 altSize=0 ssAddr=00000000 esp=1131F424 stackMask=FFFFFFFF` on every delivery. The same signature (eip `0x10584384`, addr `0xfffffd08`) is FD-115's original 2026-11-02 instance and the batch-11 a4 and batch-12 a1/a2/b3 sightings — the mechanism behind FD-115 was never identified; this is it. The 64-bit delivery (`signalFrameBase64`) already guards on `alt.ssSp` and does not have this defect. Closing terms: the consumer Chromium check passes on the fixed build with no fault-driven restart and no `0xfffffd08` fault in its preserved console, and the same check passes on the previous release's build with the fix applied (shared code). Filed by the FD-271 lane, 2026-11-10; record `docs/reports/fd271-chromium-boot-fault-loop-20261110.md`.
+- **FD-271 — The Chromium boot dies in a repeated fault loop before the desktop is ready: a fresh clone child's first fault is delivered on an alternate signal stack that was never set up, so every signal-frame write faults and the loop kills the process. CLOSED 2026-11-10 — see CL-201.** *(High)* During the Chromium boot, a fresh chrome.exe child thread faults once at its first instruction (glibc `__clone` return, `0x10584384`) and the fault is delivered to Wine's SIGSEGV handler, which is installed with SA_ONSTACK. The thread never called sigaltstack — a fresh pthread starts with SS_DISABLE, sp=0, size=0 (verified on real Linux, which delivers such a signal on the normal stack) — but the 32-bit `KThread::runSignal` uses the alternate stack whenever SA_ONSTACK is set, computing the frame at `alternateStack + alternateStackSize - CONTEXT_SIZE` = `0xfffffd00`, so the first frame write faults at `0xfffffd08` and is re-delivered identically until FD-205 containment ends the process at count 129. Proven by the FD-271 lane's diagnostic build: `test-results/fd271/diag-run2/console.txt` — three attempts, each one trigger fault (`addr=0x10584384`, `pageFlags=0x25` MAPPED|EXEC|READ, op cached) then 64 logged write faults at `0xfffffd08`, containment at count 129; the diagnostic line reads `altSp=00000000 altSize=0 ssAddr=00000000 esp=1131F424 stackMask=FFFFFFFF` on every delivery. The same signature (eip `0x10584384`, addr `0xfffffd08`) is FD-115's original 2026-11-02 instance and the batch-11 a4 and batch-12 a1/a2/b3 sightings — the mechanism behind FD-115 was never identified; this is it. The 64-bit delivery (`signalFrameBase64`) already guards on `alt.ssSp` and does not have this defect. Closing terms: the consumer Chromium check passes on the fixed build with no fault-driven restart and no `0xfffffd08` fault in its preserved console, and the same check passes on the previous release's build with the fix applied (shared code). Filed by the FD-271 lane, 2026-11-10; record `docs/reports/fd271-chromium-boot-fault-loop-20261110.md`. **CLOSED 2026-11-10 — see CL-201.** Trigger mechanism identified and fixed: the fresh clone child's first fetch returns null solely because `thread->terminating` is set by its process's `exit_group` racing thread creation (proven by diag-run9: exitgroup pid=77 code=1, then termother tid=80, then firstop term=1, then the fabricated SIGSEGV, the panic, and the whole guest exiting); the fix (commit `2b84f4ead`) retires a terminating thread silently at the three fetch-null sites (platformThread first fetch, NormalCPU::run, CPU::runNextSingleOp) instead of fabricating a fault. Proof: fix build (wasm `7afeabd8…`) — diag-run11 fired the exact race (firstop tid=81 eip=10584384 term=1) and mapped with 0 fault lines; final build (tip `69f2bfd5f`, wasm `05bc6962…`) — diag-run12 mapped (tMapped 56.520 s, 7 frames, 1,273,748 lit pixels, 0 fault lines); backport onto batch-14 (branch `lane-fd271-b14`, tip `970047718`, wasm `14f26e7f…`) — diag-run-b14-3 mapped (tMapped 73.402 s, 5 frames, 1,273,748 lit pixels, 0 fault lines). Record `docs/reports/fd271-chromium-boot-fault-loop-20261110.md`.
 
 
 ## B. Fixed on a lane branch — awaiting merge
@@ -16935,6 +16950,35 @@ its lane and is not a defect, for the stated reason:
   direct bridge calls (a trap cannot return a host pointer; the
   supported path is the guest libGL's client-side mapping). Record:
   `docs/reports/fd268-vao-indexed-state-20261109.md`.
+- **CL-201 — FD-271 closed.** Fixed on branch
+  `lane-fd271` (loop fix `0647f59da` + trigger fix `2b84f4ead`,
+  diagnostic removal `69f2bfd5f`): the loop — a fresh clone child's
+  first fault was delivered on an alternate signal stack that was
+  never set up, so every signal-frame write faulted at `0xfffffd08`
+  and re-delivered identically — is fixed by falling back to the
+  normal stack when no alternate signal stack is configured; the
+  trigger — the child's first fetch returns null solely because
+  `thread->terminating` is set by its process's `exit_group` racing
+  thread creation, and the fetch-null path fabricated a SIGSEGV for
+  a valid address whose panic then exited the whole guest — is fixed
+  by retiring a terminating thread silently at the three fetch-null
+  sites (platformThread first fetch, NormalCPU::run,
+  CPU::runNextSingleOp) instead of calling `seg_mapper`. Genuine
+  decode failures on non-terminating threads still take the fault
+  path unchanged. The 64-bit path has no equivalent defect.
+  Proof: on the fix build (wasm `7afeabd8…`) diag-run11 fired the
+  exact race (firstop tid=81 eip=10584384 term=1) and mapped with 0
+  fault lines (tMapped 57.723 s, 7 frames, 1,273,748 lit pixels);
+  on the final build (tip `69f2bfd5f`, wasm `05bc6962…`) diag-run12
+  mapped clean (tMapped 56.520 s, 7 frames, 1,273,748 lit pixels,
+  0 fault lines); on the backport onto batch-14 (branch
+  `lane-fd271-b14`, tip `970047718`, wasm `14f26e7f…`)
+  diag-run-b14-3 mapped clean (tMapped 73.402 s, 5 frames,
+  1,273,748 lit pixels, 0 fault lines). Two backport attempts were
+  non-results (a test-browser close under load; a dead local games
+  mirror, restarted and verified) and are recorded in the record,
+  not counted. Record:
+  `docs/reports/fd271-chromium-boot-fault-loop-20261110.md`.
 - **CL-20 — The native Vulkan bridge test harness
   aborted at the pipeline-cache assertions, so every
   later section never ran (was FD-50).** Fixed in
