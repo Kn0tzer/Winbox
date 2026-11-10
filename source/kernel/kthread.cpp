@@ -2329,7 +2329,16 @@ void KThread::runSignal(U32 signal, U32 trapNo, U32 errorNo) {
         U32 address = 0;
         U32 stack = this->cpu->reg[4].u32;
         U32 interrupted = 0;
-        bool altStack = (action->flags & K_SA_ONSTACK) != 0;
+        // FD-271: SA_ONSTACK selects the alternate stack only when one is
+        // actually configured. A thread that never called sigaltstack (a
+        // fresh pthread created by clone starts with SS_DISABLE, sp=0,
+        // size=0; real Linux also delivers such a signal on the normal
+        // stack) has alternateStack == 0, so alternateStack +
+        // alternateStackSize - CONTEXT_SIZE wrapped to 0xfffffd00 and every
+        // signal-frame write faulted at 0xfffffd08, looping until FD-205
+        // containment killed the process. Mirrors the 64-bit guard in
+        // signalFrameBase64, which requires alt.ssSp.
+        bool altStack = (action->flags & K_SA_ONSTACK) != 0 && this->alternateStack != 0 && this->alternateStackSize != 0;
         ChangeThread c(this);
 
         cpu->fillFlags();

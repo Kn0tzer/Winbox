@@ -79,9 +79,17 @@ export default class InputGamepadTest extends ProbeTest {
       const lyUp = await this.waitForLog(page, /XINPUT slot=0 STATE .* ly=(-?\d+) /, 60000, mark);
       const lyUpValue = Number(lyUp.match(/ly=(-?\d+)/)[1]);
       check(Math.abs(lyUpValue) > 30000, `${arch}: left stick full up must read near full scale, got: ${lyUp}`);
+      // Wait for a line evidencing the new down state itself: the up
+      // phase's full-up line can still be in flight when this phase
+      // starts (console delivery can lag the mark), and a pattern
+      // accepting any ly value can match that stale line instead of
+      // the down state. Same hardening as the trigger phase below.
+      const lyDownPattern = lyUpValue > 0
+        ? /XINPUT slot=0 STATE .* ly=-\d+ /
+        : /XINPUT slot=0 STATE .* ly=\d+ /;
       mark = this.consoleLines.length;
       await this.setPad(page, () => { __bwPad.axes[1] = 1; __bwPad.timestamp++; });
-      const lyDown = await this.waitForLog(page, /XINPUT slot=0 STATE .* ly=(-?\d+) /, 60000, mark);
+      const lyDown = await this.waitForLog(page, lyDownPattern, 60000, mark);
       const lyDownValue = Number(lyDown.match(/ly=(-?\d+)/)[1]);
       check(Math.sign(lyDownValue) === -Math.sign(lyUpValue) && Math.abs(lyDownValue) > 30000,
         `${arch}: left stick down must flip the Y sign at full scale, got: ${lyDown}`);

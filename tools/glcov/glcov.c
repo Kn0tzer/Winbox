@@ -227,7 +227,6 @@ static GLfloat clearc[4] = {0.0f,0.0f,0.0f,1.0f};
 static GLint cleari[4] = {0,0,0,0};
 static GLuint clearu[4] = {0,0,0,0};
 static GLenum dbb[1] = { GL_BACK };
-static GLenum mde_mode[1] = { GL_TRIANGLES };
 static GLsizei mde_count[1] = { 3 };
 static const void *mde_idx[1] = { (const void*)0 };
 static GLint mde_base[1] = { 0 };
@@ -610,7 +609,7 @@ typedef void (APIENTRY *PFN_glMinSampleShading)(GLfloat value);
 static PFN_glMinSampleShading pglMinSampleShading = 0;
 typedef void (APIENTRY *PFN_glMultMatrixf)(const GLfloat *m);
 static PFN_glMultMatrixf pglMultMatrixf = 0;
-typedef void (APIENTRY *PFN_glMultiDrawElementsBaseVertex)(const GLenum *mode, const GLsizei *count, GLenum type, const void *const *indices, GLsizei drawcount, const GLint *basevertex);
+typedef void (APIENTRY *PFN_glMultiDrawElementsBaseVertex)(GLenum mode, const GLsizei *count, GLenum type, const void *const *indices, GLsizei drawcount, const GLint *basevertex);
 static PFN_glMultiDrawElementsBaseVertex pglMultiDrawElementsBaseVertex = 0;
 typedef void (APIENTRY *PFN_glNormal3f)(GLfloat nx, GLfloat ny, GLfloat nz);
 static PFN_glNormal3f pglNormal3f = 0;
@@ -3121,8 +3120,8 @@ static void run_all(void) {
     if (pglMultiDrawElementsBaseVertex) {
         trybegin("glMultiDrawElementsBaseVertex");
         pglGetError();
-        uint64_t _t0=qpf_us(); pglMultiDrawElementsBaseVertex(mde_mode, mde_count, GL_UNSIGNED_SHORT, mde_idx, 1, mde_base); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
-        uint64_t _t2=qpf_us(); pglMultiDrawElementsBaseVertex(mde_mode, mde_count, GL_UNSIGNED_SHORT, mde_idx, 1, mde_base); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        uint64_t _t0=qpf_us(); pglMultiDrawElementsBaseVertex(GL_TRIANGLES, mde_count, GL_UNSIGNED_SHORT, mde_idx, 1, mde_base); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglMultiDrawElementsBaseVertex(GL_TRIANGLES, mde_count, GL_UNSIGNED_SHORT, mde_idx, 1, mde_base); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
         rep("glMultiDrawElementsBaseVertex",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
     } else {
     /* glMultiDrawElementsBaseVertex: no proc */

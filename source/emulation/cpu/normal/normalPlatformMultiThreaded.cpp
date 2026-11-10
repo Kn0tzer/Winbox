@@ -122,10 +122,20 @@ static void platformThread(CPU* cpu) {
     try {
         cpu->nextOp = cpu->getNextOp();
         if (!cpu->nextOp) {
-            cpu->thread->seg_mapper(cpu->getEipAddress(), true, false, false);
-            cpu->nextOp = cpu->getNextOp();
-            if (!cpu->nextOp) {
-                kpanic_fmt("Failed to get first op for thread %d of process %d at address %x", cpu->thread->id, process->id, cpu->getEipAddress());
+            // FD-271: a thread terminated before its first fetch (exit_group
+            // or exec racing thread creation) has no first instruction to
+            // run -- its null fetch is a retirement, not a fault. Treating
+            // it as a fault delivers a signal for a valid address, and the
+            // panic that follows kills the whole guest. Retire silently;
+            // the block below already retires a thread with no first op.
+            if (cpu->thread->terminating) {
+                cpu->nextOp = nullptr;
+            } else {
+                cpu->thread->seg_mapper(cpu->getEipAddress(), true, false, false);
+                cpu->nextOp = cpu->getNextOp();
+                if (!cpu->nextOp) {
+                    kpanic_fmt("Failed to get first op for thread %d of process %d at address %x", cpu->thread->id, process->id, cpu->getEipAddress());
+                }
             }
         }
     } catch (...) {

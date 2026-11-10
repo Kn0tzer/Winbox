@@ -5890,6 +5890,21 @@ do not close the entry until they land.
   remains unattributed, as recorded above. The entry
   stays closed on its surfacing term (CL-127).
 
+  **Update (FD-271 lane, 2026-11-10):** the mechanism behind the
+  2026-11-02 instance's fault-loop shape is now identified and fixed
+  — see FD-271 (CL-201): the fault is delivered on an alternate
+  signal stack that was never set up (loop, commit `0647f59da`) and
+  the trigger is a terminating-flag first-fetch fabrication when
+  exit_group races thread creation (trigger, commit `2b84f4ead`).
+  The standing tally "3 in 60" no longer describes the consumer
+  series: the batch-15 deploy consumer series went 1 of 4 mapped
+  (the fault firing far more often), and the diagnostic runs on the
+  unfixed builds show 2 fired of 5 decisive runs. On the fixed
+  builds the consumer check is 3 of 3 mapped with 0 fault lines
+  (diag-run10/11/12), and the backport build is 1 of 1 mapped
+  (diag-run-b14-3). The entry stays closed on its surfacing term
+  (CL-127).
+
 - **FD-123 — A zero-length plain write on
   a 64-bit datagram socket queues nothing,
   where the host queues an empty
@@ -11280,10 +11295,15 @@ do not close the entry until they land.
 
 - **FD-266 — After the fault-containment fix ends a faulting guest process, the session dies silently: the launcher never restarts it and never reports the death. CLOSED 2026-11-08 — see CL-192.** *(Medium — the containment itself works; the session should surface the death or restart. Filed by the batch-12 deploy lane, 2026-11-08.)* In the batch-12 live acceptance the consumer browser program hit the FD-205 fault loop three times (runs a1, a2, b3 — identical signature: guest-memfault32, addr `0xfffffd08`, eip `0x10584384`); each time the containment refused delivery at count 130 (`delivered=0`) and the faulting guest process ended, exactly as designed — but the session then sat silent until the 900 s timeout: the preserved consoles carry zero `restart` lines, their last entries are the lazy-fetch lines at ~23–26 s, and the timeout screenshots are nearly dark. In batch 11 the same loop died differently (a worker RangeError killed the page), so this silent-after-containment shape is new to batch 12. Closing terms: a session whose guest process dies via containment either restarts the guest or reports the failure, proven by a live consumer run that hits the loop and then either maps or fails loudly instead of timing out silently.
 
-- **FD-267 — The base-vertex draw handlers pass through to WebGL methods this platform does not have, so every call throws and the guest records GL_INVALID_OPERATION with nothing drawn.** *(Medium)* In `source/opengl/gl64bridge.cpp`, the handlers for `glDrawElementsBaseVertex`, `glDrawElementsInstancedBaseVertex` and `glDrawElementsInstancedBaseVertexBaseInstance` (and `glMultiDrawElementsBaseVertex`, which loops over the instanced form) issue their draws through `GLctx.drawElementsBaseVertex` / `GLctx.drawElementsInstancedBaseVertex` / `GLctx.drawElementsInstancedBaseVertexBaseInstance` EM_ASM calls. Measured 2026-11-09 on the probe browser (Chromium + SwiftShader, WebGL 2.0 / OpenGL ES 3.0): the context has no such methods and offers neither `OES_draw_elements_base_vertex` nor `EXT_draw_elements_base_vertex`, so every call throws `TypeError: GLctx.drawElementsBaseVertex is not a function`, the handler's own catch reports it, and the guest sees error 1282 with no draw. The coverage harness records 1282/1282 for all three rows on the FD-209 fixed build (`test-results/bridge-coverage-fd209-final2/console.log` carries the TypeError lines verbatim). Any guest that resolves these entry points at the now-default 3.3 profile and draws through them loses those draws — the same failure shape FNA hit through `glDrawRangeElementsBaseVertex` before FD-209 implemented that entry point by index rebasing (record `docs/reports/fd209-gl-resolution-20261109.md`); the same emulation extends to these forms (the instanced forms additionally need the rebased buffer drawn with `glDrawElementsInstanced`). Closing terms: the three handlers draw correctly on this platform — the coverage rows answer 0/0 and a guest drawing through them presents — or the register records why a correct answer is impossible here. Filed by the FD-209 lane, 2026-11-09.
-- **FD-268 — At the 3.3 GL profile that FD-209 made the default, a cluster of buffer and indexed-state entry points answers GL errors to the coverage harness's calls that the pool lanes' own builds answered cleanly at their measured profiles.** *(Medium)* Measured 2026-11-09 by the batch-14 merge gate on the composed build (coverage runs `test-results/bridge-coverage-merge-batch14/` at the shipped default profile and `test-results/bridge-coverage-merge-batch14-v21/` at a forced 2.1 profile — same build, same staged shim, four-run matrix in `docs/reports/merge-batch14-20261109.md`): glBufferData and glBufferSubData answer 1282/1282 at the default profile but 0/0 at 2.1 on the same build — FD-208's transform-feedback lift (CL-196) is present verbatim in the composed bridge and works at 2.1, but does not cover the state the harness reaches once the 3.x entry points resolve; the FD-209 lane build, which carries no lift, answers the same 1282 at 3.3. glGetBufferParameteriv answers 1282/1282 only on the composed build at 3.3 (0/0 on both lane builds at their defaults and at 2.1 on the composed build). glCopyBufferSubData, glMapBufferRange and glDrawElementsInstanced answer 1282/1282, and glEnablei, glDisablei, glIsEnabledi and glGetBooleani_v answer 1280/1280, on the composed build at 3.3, against 0/0 on the FD-209 lane build at the same profile; the harness passes literal arguments for every one of these calls, so the differences are sequence state — FD-208's fixes change earlier answers in the harness's one long sequence (among them glBindVertexArray (1281, 0) → (0, 0)), and the state these later calls meet differs; the precise per-row chain is not isolated. No row of this cluster regresses against the shipped batch-13 build (2.1 default, no lift: glBufferData answered 1282 there too). Closing terms: a coverage run on the fixed build at the default profile answers 0/0 for the named rows — or the register records, per row, why the error is the correct answer to the call as reached — with the 2.1-profile answers unchanged. Filed by the batch-14 merge lane, 2026-11-09; evidence `test-results/bridge-coverage-merge-batch14/glcov-results.json` + `test-results/bridge-coverage-merge-batch14-v21/glcov-results.json`.
+- **FD-267 — The base-vertex draw handlers pass through to WebGL methods this platform does not have, so every call throws and the guest records GL_INVALID_OPERATION with nothing drawn. CLOSED 2026-11-09 — see CL-199.** *(Medium)* In `source/opengl/gl64bridge.cpp`, the handlers for `glDrawElementsBaseVertex`, `glDrawElementsInstancedBaseVertex` and `glDrawElementsInstancedBaseVertexBaseInstance` (and `glMultiDrawElementsBaseVertex`, which loops over the instanced form) issue their draws through `GLctx.drawElementsBaseVertex` / `GLctx.drawElementsInstancedBaseVertex` / `GLctx.drawElementsInstancedBaseVertexBaseInstance` EM_ASM calls. Measured 2026-11-09 on the probe browser (Chromium + SwiftShader, WebGL 2.0 / OpenGL ES 3.0): the context has no such methods and offers neither `OES_draw_elements_base_vertex` nor `EXT_draw_elements_base_vertex`, so every call throws `TypeError: GLctx.drawElementsBaseVertex is not a function`, the handler's own catch reports it, and the guest sees error 1282 with no draw. The coverage harness records 1282/1282 for all three rows on the FD-209 fixed build (`test-results/bridge-coverage-fd209-final2/console.log` carries the TypeError lines verbatim). Any guest that resolves these entry points at the now-default 3.3 profile and draws through them loses those draws — the same failure shape FNA hit through `glDrawRangeElementsBaseVertex` before FD-209 implemented that entry point by index rebasing (record `docs/reports/fd209-gl-resolution-20261109.md`); the same emulation extends to these forms (the instanced forms additionally need the rebased buffer drawn with `glDrawElementsInstanced`). Closing terms: the three handlers draw correctly on this platform — the coverage rows answer 0/0 and a guest drawing through them presents — or the register records why a correct answer is impossible here. Filed by the FD-209 lane, 2026-11-09.
+- **FD-268 — At the 3.3 GL profile that FD-209 made the default, a cluster of buffer and indexed-state entry points answers GL errors to the coverage harness's calls that the pool lanes' own builds answered cleanly at their measured profiles.** *(Medium)* Measured 2026-11-09 by the batch-14 merge gate on the composed build (coverage runs `test-results/bridge-coverage-merge-batch14/` at the shipped default profile and `test-results/bridge-coverage-merge-batch14-v21/` at a forced 2.1 profile — same build, same staged shim, four-run matrix in `docs/reports/merge-batch14-20261109.md`): glBufferData and glBufferSubData answer 1282/1282 at the default profile but 0/0 at 2.1 on the same build — FD-208's transform-feedback lift (CL-196) is present verbatim in the composed bridge and works at 2.1, but does not cover the state the harness reaches once the 3.x entry points resolve; the FD-209 lane build, which carries no lift, answers the same 1282 at 3.3. glGetBufferParameteriv answers 1282/1282 only on the composed build at 3.3 (0/0 on both lane builds at their defaults and at 2.1 on the composed build). glCopyBufferSubData, glMapBufferRange and glDrawElementsInstanced answer 1282/1282, and glEnablei, glDisablei, glIsEnabledi and glGetBooleani_v answer 1280/1280, on the composed build at 3.3, against 0/0 on the FD-209 lane build at the same profile; the harness passes literal arguments for every one of these calls, so the differences are sequence state — FD-208's fixes change earlier answers in the harness's one long sequence (among them glBindVertexArray (1281, 0) → (0, 0)), and the state these later calls meet differs; the precise per-row chain is not isolated. No row of this cluster regresses against the shipped batch-13 build (2.1 default, no lift: glBufferData answered 1282 there too). Closing terms: a coverage run on the fixed build at the default profile answers 0/0 for the named rows — or the register records, per row, why the error is the correct answer to the call as reached — with the 2.1-profile answers unchanged. Filed by the batch-14 merge lane, 2026-11-09; evidence `test-results/bridge-coverage-merge-batch14/glcov-results.json` + `test-results/bridge-coverage-merge-batch14-v21/glcov-results.json`. **CLOSED 2026-11-09 — see CL-200.** Three separate mechanisms, each proven in isolation before the fix: (1) Emscripten's glemu VAO emulation wipes the live `ARRAY_BUFFER`/`ELEMENT_ARRAY_BUFFER` bindings on every VAO bind/unbind and replays only what was recorded while that VAO was current, so the harness's standard setup order (bind buffers, bind VAO, unbind VAO) lost both bindings — the bridge's `glBindVertexArray` handler now restores the array buffer always and the default VAO's element-array binding on unbind; (2) the guest shim declared `glEnablei`/`glDisablei`/`glIsEnabledi` in trap order `(index, cap)` instead of desktop order `(target, index)`, so the cap arrived as 0 — the three signatures now match the desktop call and pack the trap in ABI order; (3) this host's WebGL2 `getIndexedParameter` raises `INVALID_ENUM` for every pname, so `glGetBooleani_v` falls back to the scalar `getParameter`. Proof on the fixed build (wasm `c2452af4c6d1d3a5`, committed harness, 334 rows): default profile 8 of 10 named rows now 0/0 with 0 regressions across all 334 rows; forced 2.1 profile all 334 rows identical to the batch-14 v21 baseline. The two remaining rows are correct answers to the calls as reached: `glCopyBufferSubData` 1282 because the harness never binds a buffer to `GL_COPY_WRITE_BUFFER`, and `glMapBufferRange` 1282 because the bridge deliberately rejects direct bridge calls (a trap cannot return a host pointer; the supported path is the guest libGL's client-side mapping). Record: `docs/reports/fd268-vao-indexed-state-20261109.md`.
 
-- **FD-269 — The input-gamepad suite test's left-stick Y phase can fail against a correct guest: its wait takes the first post-mark XInput state line carrying an ly value, and console delivery lag lets a stale full-up line (printed before the stick moved down) land after the mark and fail the sign check.** *(Low — test harness only; no guest behavior is wrong)* Proven at the batch-14 gate, 2026-11-09: the test failed at the same assertion in three runs (in-suite plus two focused re-runs, box load 5–11 throughout), each time quoting an `ly=32767` line, while every run's preserved console contains the required down state `lx=32767 ly=-32767` delivered in the same phase (three occurrences in each of the in-suite and second re-run consoles). The hazard is documented in the test file itself at the trigger phase (`web/tests/suite/browser/input-gamepad.test.mjs`: console delivery can lag the mark, so a pattern accepting the resting value can match an in-flight line), which was hardened by waiting for a line evidencing the press itself; the Y phase's pattern accepts any ly value and was not hardened. Closing terms: the Y-phase wait accepts only a line evidencing the new state (or skips lines until ly differs from the up value), and the test then passes three consecutive runs. Filed by the batch-14 merge lane, 2026-11-09; evidence `test-results/merge-batch14/suite-full.log` + `test-results/merge-batch14/browser-reruns.log` + the preserved consoles under `test-results/merge-batch14/insuite-input-gamepad/` and `test-results/suite-input-gamepad/`.
+- **FD-269 — The input-gamepad suite test's left-stick Y phase can fail against a correct guest: its wait takes the first post-mark XInput state line carrying an ly value, and console delivery lag lets a stale full-up line (printed before the stick moved down) land after the mark and fail the sign check. CLOSED 2026-11-09 — see CL-198.** *(Low — test harness only; no guest behavior is wrong)* Proven at the batch-14 gate, 2026-11-09: the test failed at the same assertion in three runs (in-suite plus two focused re-runs, box load 5–11 throughout), each time quoting an `ly=32767` line, while every run's preserved console contains the required down state `lx=32767 ly=-32767` delivered in the same phase (three occurrences in each of the in-suite and second re-run consoles). The hazard is documented in the test file itself at the trigger phase (`web/tests/suite/browser/input-gamepad.test.mjs`: console delivery can lag the mark, so a pattern accepting the resting value can match an in-flight line), which was hardened by waiting for a line evidencing the press itself; the Y phase's pattern accepts any ly value and was not hardened. Closing terms: the Y-phase wait accepts only a line evidencing the new state (or skips lines until ly differs from the up value), and the test then passes three consecutive runs. Filed by the batch-14 merge lane, 2026-11-09; evidence `test-results/merge-batch14/suite-full.log` + `test-results/merge-batch14/browser-reruns.log` + the preserved consoles under `test-results/merge-batch14/insuite-input-gamepad/` and `test-results/suite-input-gamepad/`.
+
+
+- **FD-270 — `glReadPixels` from the default framebuffer without a prior `glBindFramebuffer(GL_READ_FRAMEBUFFER, 0)` reads the host's leftover READ binding instead of the guest's drawn framebuffer.** *(Low)* The bridge's readback handler (`source/opengl/gl64bridge.cpp`, `GL64_fn_glReadPixels`) calls host `glReadPixels` on whatever READ binding is current, without first routing through the guest's read target the way the `glReadBuffer` handler does (`bindGuestTarget(GL_READ_FRAMEBUFFER)`). Measured 2026-11-09 by the FD-267 lane: a guest that draws and then reads back without ever binding its read target gets black pixels with err=0 (presentation probe runs `fd267-present4/5/6`), while the identical reads return the correct pixels once the guest binds READ 0 first (run `fd267-present7`, all PASS). Any guest that reads its own frame back without binding READ first gets wrong pixels. Fix shape: route the non-texture read through `bindGuestTarget(GL_READ_FRAMEBUFFER)` before the host call. Filed by the FD-267 lane, 2026-11-09.
+
+- **FD-271 — The Chromium boot dies in a repeated fault loop before the desktop is ready: a fresh clone child's first fault is delivered on an alternate signal stack that was never set up, so every signal-frame write faults and the loop kills the process. CLOSED 2026-11-10 — see CL-201.** *(High)* During the Chromium boot, a fresh chrome.exe child thread faults once at its first instruction (glibc `__clone` return, `0x10584384`) and the fault is delivered to Wine's SIGSEGV handler, which is installed with SA_ONSTACK. The thread never called sigaltstack — a fresh pthread starts with SS_DISABLE, sp=0, size=0 (verified on real Linux, which delivers such a signal on the normal stack) — but the 32-bit `KThread::runSignal` uses the alternate stack whenever SA_ONSTACK is set, computing the frame at `alternateStack + alternateStackSize - CONTEXT_SIZE` = `0xfffffd00`, so the first frame write faults at `0xfffffd08` and is re-delivered identically until FD-205 containment ends the process at count 129. Proven by the FD-271 lane's diagnostic build: `test-results/fd271/diag-run2/console.txt` — three attempts, each one trigger fault (`addr=0x10584384`, `pageFlags=0x25` MAPPED|EXEC|READ, op cached) then 64 logged write faults at `0xfffffd08`, containment at count 129; the diagnostic line reads `altSp=00000000 altSize=0 ssAddr=00000000 esp=1131F424 stackMask=FFFFFFFF` on every delivery. The same signature (eip `0x10584384`, addr `0xfffffd08`) is FD-115's original 2026-11-02 instance and the batch-11 a4 and batch-12 a1/a2/b3 sightings — the mechanism behind FD-115 was never identified; this is it. The 64-bit delivery (`signalFrameBase64`) already guards on `alt.ssSp` and does not have this defect. Closing terms: the consumer Chromium check passes on the fixed build with no fault-driven restart and no `0xfffffd08` fault in its preserved console, and the same check passes on the previous release's build with the fix applied (shared code). Filed by the FD-271 lane, 2026-11-10; record `docs/reports/fd271-chromium-boot-fault-loop-20261110.md`. **CLOSED 2026-11-10 — see CL-201.** Trigger mechanism identified and fixed: the fresh clone child's first fetch returns null solely because `thread->terminating` is set by its process's `exit_group` racing thread creation (proven by diag-run9: exitgroup pid=77 code=1, then termother tid=80, then firstop term=1, then the fabricated SIGSEGV, the panic, and the whole guest exiting); the fix (commit `2b84f4ead`) retires a terminating thread silently at the three fetch-null sites (platformThread first fetch, NormalCPU::run, CPU::runNextSingleOp) instead of fabricating a fault. Proof: fix build (wasm `7afeabd8…`) — diag-run11 fired the exact race (firstop tid=81 eip=10584384 term=1) and mapped with 0 fault lines; final build (tip `69f2bfd5f`, wasm `05bc6962…`) — diag-run12 mapped (tMapped 56.520 s, 7 frames, 1,273,748 lit pixels, 0 fault lines); backport onto batch-14 (branch `lane-fd271-b14`, tip `970047718`, wasm `14f26e7f…`) — diag-run-b14-3 mapped (tMapped 73.402 s, 5 frames, 1,273,748 lit pixels, 0 fault lines). Record `docs/reports/fd271-chromium-boot-fault-loop-20261110.md`.
 
 
 ## B. Fixed on a lane branch — awaiting merge
@@ -16838,6 +16858,142 @@ its lane and is not a defect, for the stated reason:
   js-unit 352 passed / 2 failed (only the two known
   bare-checkout artifacts) — the standing acceptance shape. Record:
   `docs/reports/fd209-gl-resolution-20261109.md`.
+- **CL-198 — FD-269 closed.** Fixed on branch
+  `lane-fd269` (commit `b4c51b2d9`): the Y-phase wait in
+  `web/tests/suite/browser/input-gamepad.test.mjs` now builds
+  its pattern from the measured up value, accepting only a
+  line whose ly has the opposite sign — a line evidencing
+  the down state itself — so a stale full-up line still in
+  flight when the phase starts can no longer match and fail
+  the sign check. The existing sign-and-magnitude check is
+  unchanged.
+  Proof: on the fixed build the test passes three consecutive
+  runs (482,599 ms, 313,496 ms, 412,823 ms), both arches each
+  time, at box loads peaking at 19.0, 13.05, and 16.04; the
+  down state `ly=-32767` is in every run's preserved console
+  on both arches. An earlier attempt failed at the button-A
+  phase on the 64-bit arm under load 15.2 before reaching the
+  changed code — adjudicated a load artifact (the guest
+  printed its resting state and then stalled; the 32-bit arm
+  passed all phases including Y-down in that same run).
+  Checking queue pipeline #73: citations exit 0, js-legacy
+  clean, native-main 706/0, native-x64 121/0, run-native pass,
+  js-unit 352 passed / 2 failed (only the two known
+  bare-checkout artifacts) — the standing acceptance shape. Record:
+  `docs/reports/fd269-input-gamepad-y-phase-20261109.md`.
+- **CL-199 — FD-267 closed.** Fixed on branch
+  `lane-fd267` (commits `c84d0d931` + `1ddba5c09` + `f7ece04dc` +
+  `11d8709dc`): the base-vertex draw handlers no longer pass through to
+  WebGL methods this platform does not have. A shared helper
+  `drawElementsRebased()` reads the index data (bound element buffer,
+  guest memory, or zeroed data for the NULL/no-buffer harness state),
+  adds `baseVertex` to every index, and draws the rebased indices from
+  a scratch element buffer through plain `glDrawElements` /
+  `glDrawElementsInstanced`; all four handlers
+  (`glDrawElementsBaseVertex`, `glDrawElementsInstancedBaseVertex`,
+  `glDrawElementsInstancedBaseVertexBaseInstance`,
+  `glMultiDrawElementsBaseVertex`) are rewritten onto it. MultiDraw
+  also fixes two latent bugs: its draw count was read from `counts[0]`
+  instead of `primcount`, and it issued an instanced draw per batch
+  instead of one plain draw. Known limitation, documented in the code:
+  `gl_InstanceID` cannot be offset on WebGL2, so the BaseInstance form
+  draws the right geometry but a shader reading `gl_InstanceID` sees
+  un-offset ids. The filing's claim of 1282/1282 for all three rows was
+  wrong for the BaseInstance name: it answers -1/-1 (no callable
+  pointer) because Wine's loader withholds the GL 4.2 entry point at
+  the shipped 3.3 profile, exactly the FD-209 record's alternative
+  term for the base-instance pair; the handler is implemented anyway.
+  Proof: coverage on the fixed build (334 handlers, RESULT 0) changes
+  exactly two error rows against the batch-14 gate, both fixes
+  (`glDrawElementsBaseVertex` and
+  `glDrawElementsInstancedBaseVertex`, 1282/1282 -> 0/0), zero
+  regressions; and a guest presentation test
+  (`tools/glcov/fd267-present.c`, run `fd267-present7`, RESULT 0)
+  draws a red triangle through every resolvable entry point
+  (EBO and client-memory index paths) and both triangles through
+  MultiDraw, with no GL error. MultiDraw's coverage row stays
+  1282/1282, but its handler never refuses the call (no
+  `rejectBridgeEntry` line in the run) and the presentation test
+  proves the draw works, so the row is a harness-state artifact of
+  the FD-208-documented class. The lane also fixes a harness ABI bug
+  (the MultiDraw typedef passed `mode` as a pointer) and files FD-270
+  (readback without a prior READ bind reads the host leftover
+  binding). Checking queue pipeline #74: citations exit 0,
+  js-legacy clean, native-main 706/0, native-x64 121/0, run-native
+  pass, js-unit 352 passed / 2 failed (only the two known bare-checkout
+  artifacts) — the standing acceptance shape. Record:
+  `docs/reports/fd267-base-vertex-draws-20261109.md`.
+- **CL-200 — FD-268 closed.** Fixed on branch
+  `lane-fd268` (commit `3fc3cb7a5`): three separate mechanisms.
+  (1) Emscripten's glemu VAO emulation wipes the live
+  `ARRAY_BUFFER`/`ELEMENT_ARRAY_BUFFER` bindings on every VAO
+  bind/unbind and replays only what was recorded while that VAO was
+  current, so the harness's setup order (bind buffers, bind VAO,
+  unbind VAO) lost both bindings — the bridge's `glBindVertexArray`
+  handler now restores the array buffer always and the default VAO's
+  element-array binding on unbind to VAO 0. (2) The guest shim
+  declared `glEnablei`/`glDisablei`/`glIsEnabledi` in trap order
+  `(index, cap)` instead of desktop order `(target, index)`, so the
+  cap arrived as 0 — the three signatures now match the desktop call
+  and pack the trap in ABI order; the 32-bit shim was regenerated
+  from it and both `libGL.so.1` binaries rebuilt. (3) This host's
+  WebGL2 `getIndexedParameter` raises `INVALID_ENUM` for every pname,
+  so `glGetBooleani_v` falls back to the scalar `getParameter` when
+  the indexed query errors or returns null. Proof: coverage on the
+  fixed build (334 handlers, RESULT 0) — at the default profile 8 of
+  the 10 named rows now answer 0/0 with 0 regressions across all 334
+  rows, and at the forced 2.1 profile all 334 rows are identical to
+  the batch-14 v21 baseline. The two remaining rows are correct
+  answers to the calls as reached: `glCopyBufferSubData` 1282 because
+  the harness never binds a buffer to `GL_COPY_WRITE_BUFFER`, and
+  `glMapBufferRange` 1282 because the bridge deliberately rejects
+  direct bridge calls (a trap cannot return a host pointer; the
+  supported path is the guest libGL's client-side mapping). Record:
+  `docs/reports/fd268-vao-indexed-state-20261109.md`.
+- **CL-201 — FD-271 closed.** Fixed on branch
+  `lane-fd271` (loop fix `0647f59da` + trigger fix `2b84f4ead`,
+  diagnostic removal `69f2bfd5f`): the loop — a fresh clone child's
+  first fault was delivered on an alternate signal stack that was
+  never set up, so every signal-frame write faulted at `0xfffffd08`
+  and re-delivered identically — is fixed by falling back to the
+  normal stack when no alternate signal stack is configured; the
+  trigger — the child's first fetch returns null solely because
+  `thread->terminating` is set by its process's `exit_group` racing
+  thread creation, and the fetch-null path fabricated a SIGSEGV for
+  a valid address whose panic then exited the whole guest — is fixed
+  by retiring a terminating thread silently at the three fetch-null
+  sites (platformThread first fetch, NormalCPU::run,
+  CPU::runNextSingleOp) instead of calling `seg_mapper`. Genuine
+  decode failures on non-terminating threads still take the fault
+  path unchanged. The 64-bit path has no equivalent defect.
+  Proof: on the fix build (wasm `7afeabd8…`) diag-run11 fired the
+  exact race (firstop tid=81 eip=10584384 term=1) and mapped with 0
+  fault lines (tMapped 57.723 s, 7 frames, 1,273,748 lit pixels);
+  on the final build (tip `69f2bfd5f`, wasm `05bc6962…`) diag-run12
+  mapped clean (tMapped 56.520 s, 7 frames, 1,273,748 lit pixels,
+  0 fault lines); on the backport onto batch-14 (branch
+  `lane-fd271-b14`, tip `970047718`, wasm `14f26e7f…`)
+  diag-run-b14-3 mapped clean (tMapped 73.402 s, 5 frames,
+  1,273,748 lit pixels, 0 fault lines). Two backport attempts were
+  non-results (a test-browser close under load; a dead local games
+  mirror, restarted and verified) and are recorded in the record,
+  not counted. Record:
+  `docs/reports/fd271-chromium-boot-fault-loop-20261110.md`.
+  Light checks on the exact tip (`4b0669c66`), run directly because
+  the checking queue could not dispatch: citations exit 0 (352 rows,
+  0 mismatches); js-legacy 116 pass / 0 fail; js-unit 354 passed / 0
+  failed (the 2 known bare-checkout artifacts did not fail — the tree
+  carries a built dist/). The native suites and run-native were NOT
+  run on this tip: the queue killed four consecutive pipelines
+  (#78–#81) with "queue: task expired" and never dispatched a
+  workflow, despite an agent restart and a server restart. Root cause
+  found during the repair: the server sets no WOODPECKER_GRPC_SECRET,
+  so it generates a random one per start and a server restart
+  invalidates the agent's token (the agent must be restarted to
+  re-authenticate); the dispatch failure itself persisted after
+  re-authentication and is a queue-side problem for the coordinator.
+  The native-suite verdict on this tip is owed once the queue is
+  restored.
 - **CL-20 — The native Vulkan bridge test harness
   aborted at the pipeline-cache assertions, so every
   later section never ran (was FD-50).** Fixed in
