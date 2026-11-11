@@ -6,7 +6,7 @@ import { ProbeTest } from '../lib/probe-base.mjs';
 import { check, checkGreaterThan } from '../lib/assert.mjs';
 import { guestFixture } from '../lib/guest-fixtures.mjs';
 export default class CommonDependenciesTest extends ProbeTest {
-  constructor() { super({ tag: 'common-dependencies', timeoutMs: 1200000 }); }
+  constructor() { super({ tag: 'common-dependencies', timeoutMs: 1500000 }); }
   async run({ page }) {
     await page.addInitScript(() => {
       globalThis.__audioCapture = { contexts: [], callbacks: 0, samples: 0, nonZero: 0, peak: 0, worklets: 0 };
@@ -79,7 +79,11 @@ export default class CommonDependenciesTest extends ProbeTest {
     await target.locator('#canvas').click({ position: { x: 24, y: 24 } });
     await this.stageFile(target, 'mshtml-document.exe', await guestFixture('mshtml-document', arch));
     let from = await this.spawnGuest(target, 'mshtml-document.exe', { arch });
-    await this.waitForLog(target, /MSHTML: RESULT 0/, 180000, from);
+    // FD-273: the Gecko startup stage takes ~130 s at box load ~9 and
+    // exceeds the old 180 s wait at load 12-15 while the guest keeps
+    // progressing (discovery probe: RESULT at 130.2 s, load 8-9.5).
+    // 360 s covers ~2.7x the measured stage time.
+    await this.waitForLog(target, /MSHTML: RESULT 0/, 360000, from);
     check(this.consoleLines.slice(from).some(line => /MSHTML: TITLE boxedwine gecko/.test(line)), `${arch} Gecko parsed the document title`);
     check(this.consoleLines.slice(from).some(line => /MSHTML: TEXT embedded html works/.test(line)), `${arch} Gecko exposed parsed body text`);
     await this.stageFile(target, 'openal-tone.exe', await guestFixture('openal-tone', arch));

@@ -5245,6 +5245,17 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 if (w < 0 || h < 0) fail(GL_INVALID_VALUE);
                 else if ((U64)w * h * (U64)(depth > 0 ? depth : 1) > (16u << 20)) fail(GL_OUT_OF_MEMORY);
                 else if (w > 0 && h > 0) {
+                    // FD-270: a guest glReadPixels from the default framebuffer
+                    // without a prior glBindFramebuffer(GL_READ_FRAMEBUFFER, 0)
+                    // must read the guest's own drawn framebuffer, not whatever
+                    // READ binding the host happens to hold. Route the
+                    // non-texture read through the guest's read target first,
+                    // the way the glReadBuffer handler does, and restore the
+                    // host binding afterwards.
+                    if (!texture) {
+                        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &savedRead);
+                        bindGuestTarget(GL_READ_FRAMEBUFFER);
+                    }
                     glGetIntegerv(GL_PACK_ALIGNMENT, &pack);
                     glGetIntegerv(GL_PACK_ROW_LENGTH, &row);
                     glGetIntegerv(GL_PACK_SKIP_ROWS, &skipRows);
@@ -5297,6 +5308,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     glPixelStorei(GL_PACK_SKIP_ROWS,skipRows);
                     glPixelStorei(GL_PACK_SKIP_PIXELS,skipPixels);
                     glBindBuffer(GL_PIXEL_PACK_BUFFER,pbo);
+                    if (!texture) glBindFramebuffer(GL_READ_FRAMEBUFFER, savedRead);
                 }
                 if (texture) {
                     glBindFramebuffer(GL_READ_FRAMEBUFFER,savedRead);

@@ -1,7 +1,9 @@
 // Real-launcher demo evidence. This records observations; it makes no pass/fail
 // judgment about whether a demo is playable.
 import { chromium } from '@playwright/test';
-import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serve } from '../../tools/browser/serve.mjs';
@@ -42,6 +44,87 @@ const blankScreenGraceMs = 15_000;
 const blankScreenSampleIntervalMs = 5_000;
 const blankScreenFailureSamples = 6;
 
+// FD-272: the test browser's tab can die under box memory pressure even
+// though the guest is healthy (the deploy's b1/b6/b8 runs: the renderer
+// died, 0 guest fault lines, swap full). Two guards keep the check from
+// failing on the test rig instead of the program:
+// (1) a memory gate refuses to start an attempt the box cannot back;
+// (2) a dead renderer discards the attempt as environment noise and the
+// attempt runs once more on a fresh browser. A second death abandons the
+// check as an environment failure (exit code 3), never as a product verdict.
+const FD272_MAX_ATTEMPTS = 2;
+const FD272_MEMORY_WAIT_MS = Number(process.env.BW_MEMORY_GATE_WAIT_MS || 5 * 60 * 1000);
+const FD272_MEMORY_POLL_MS = 15 * 1000;
+// Peak committed memory of one consumer run's browser tree, measured
+// 2026-11-10 on this box (baseline run fd272-baseline): the renderer holds
+// ~2.8 GiB and the whole browser tree ~3.7 GiB. The gate requires that much
+// free (MemAvailable + SwapFree) plus margin before starting an attempt.
+// Overridable with BW_MEMORY_GATE_NEED_MB.
+const FD272_MEMORY_NEED_MB = Number(process.env.BW_MEMORY_GATE_NEED_MB || 5120);
+
+function readFreeMemoryMB() {
+  try {
+    const meminfo = readFileSync('/proc/meminfo', 'utf8');
+    const field = key => {
+      const match = meminfo.match(new RegExp(`^${key}:\\s+(\\d+) kB`, 'm'));
+      return match ? Number(match[1]) / 1024 : 0;
+    };
+    return { available: field('MemAvailable'), swapFree: field('SwapFree') };
+  } catch {
+    return { available: 0, swapFree: 0 };
+  }
+}
+
+async function waitForMemoryGate() {
+  const deadline = Date.now() + FD272_MEMORY_WAIT_MS;
+  for (;;) {
+    const { available, swapFree } = readFreeMemoryMB();
+    const freeMB = available + swapFree;
+    if (freeMB >= FD272_MEMORY_NEED_MB) {
+      console.log(`BW64-ENV memory gate passed: ${Math.round(freeMB)} MiB free (MemAvailable ${Math.round(available)} + SwapFree ${Math.round(swapFree)}) >= ${FD272_MEMORY_NEED_MB} MiB needed`);
+      return true;
+    }
+    if (Date.now() >= deadline) {
+      console.error(`BW64-ENV memory gate: only ${Math.round(freeMB)} MiB free after ${Math.round(FD272_MEMORY_WAIT_MS / 1000)}s, need ${FD272_MEMORY_NEED_MB} MiB — not starting the browser`);
+      return false;
+    }
+    console.log(`BW64-ENV memory gate waiting: ${Math.round(freeMB)} MiB free, need ${FD272_MEMORY_NEED_MB} MiB`);
+    await sleep(FD272_MEMORY_POLL_MS);
+  }
+}
+
+function resetAttemptState() {
+  browser = undefined;
+  page = undefined;
+  server = undefined;
+  build = undefined;
+  startedAt = 0;
+  tClick = null;
+  demoClickAtMs = null;
+  tMapped = null;
+  mappedAt = null;
+  gameplayStartedAt = null;
+  audioStartBeforePlayerClick = null;
+  threadDumpTimer = null;
+  threadDumpAttempts = 0;
+  threadDumpInvocations = 0;
+  threadDumpRuntimeUrl = '';
+  sampling = false;
+  samplerPromise = null;
+  lastWasmMetricLine = null;
+  lastMetricsSnapshot = null;
+  lastJitStats = null;
+  inputIndex = 0;
+  savedLogText = '';
+  consoleErrorCount = 0;
+  threadDumpLauncherPatched = false;
+  consoleLines.length = 0;
+  wasmMetricsLines.length = 0;
+  pageErrors.length = 0;
+  httpErrors.length = 0;
+  screenshots.length = 0;
+}
+
 const metricsPath = join(outDir, 'metrics.jsonl');
 
 let slot;
@@ -77,12 +160,10 @@ let threadDumpLauncherPatched = false;
 
 const elapsedSeconds = () => Number(((Date.now() - startedAt) / 1000).toFixed(3));
 
-async function main() {
+async function runAttempt() {
 try {
-  await mkdir(outDir, { recursive: true });
   await writeFile(metricsPath, '');
   await waitForBuildIdle();
-  slot = await acquireProbeSlot();
   build = JSON.parse(await readFile(join(repo, 'dist/runtime/BUILD_INFO.json'), 'utf8'));
   if (!process.env.BW_TEST_BASE_URL) server = await serve(process.env.BW_TEST_DIST || 'dist');
   browser = await chromium.launch({
@@ -234,12 +315,24 @@ try {
     httpErrors.push(line);
     consoleLines.push(line);
   });
+  // FD-272: a dead renderer does not always surface as a thrown error — the
+  // mapped wait keeps polling a destroyed execution context until its own
+  // timeout. Race the wait against the page crash event so a renderer death
+  // fails fast with a retryable error instead of burning the full timeout.
+  let pageCrashed = false;
+  let rejectOnCrash;
+  const crashPromise = new Promise((_, reject) => { rejectOnCrash = reject; });
+  crashPromise.catch(() => {});
+  page.on('crash', () => {
+    pageCrashed = true;
+    rejectOnCrash(new Error('Target crashed'));
+  });
 
   const baseUrl = process.env.BW_TEST_BASE_URL || `http://127.0.0.1:${server.address().port}/`;
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await applyJitSetting(page, jit);
   try {
-    await launchDemoGame(page, demo, { mappedTimeout, onClick: () => {
+    const gamePromise = launchDemoGame(page, demo, { mappedTimeout, onClick: () => {
       tClick = elapsedSeconds();
       demoClickAtMs = Date.now();
       if (threadDumpEnabled) {
@@ -271,7 +364,10 @@ try {
         }, threadDumpIntervalMs);
       }
     } });
+    gamePromise.catch(() => {});
+    await Promise.race([gamePromise, crashPromise]);
   } catch (error) {
+    if (pageCrashed) throw new Error('Target crashed');
     if (error.name !== 'TimeoutError') throw error;
     const timeoutPath = join(outDir, 'timeout.png');
     await page.screenshot({ path: timeoutPath, fullPage: true }).catch(() => {});
@@ -478,8 +574,40 @@ try {
     await writeFile(join(outDir, 'log.txt'), savedLogText).catch(() => {});
   }
   if (server) await new Promise(resolveClose => server.close(resolveClose)).catch(() => {});
-  await slot?.release();
 }
+}
+
+async function main() {
+  await mkdir(outDir, { recursive: true });
+  await waitForBuildIdle();
+  slot = await acquireProbeSlot();
+  try {
+    for (let attempt = 1; attempt <= FD272_MAX_ATTEMPTS; attempt++) {
+      resetAttemptState();
+      if (!await waitForMemoryGate()) {
+        process.exitCode = 3;
+        return;
+      }
+      try {
+        await runAttempt();
+        return;
+      } catch (error) {
+        const rendererDied = /Target crashed|Target page, context or browser has been closed|Browser has been closed|Page closed/.test(error?.message || String(error));
+        if (!rendererDied) throw error;
+        for (const name of ['console.txt', 'log.txt']) {
+          await rename(join(outDir, name), join(outDir, name.replace('.txt', `-attempt-${attempt}.txt`))).catch(() => {});
+        }
+        if (attempt >= FD272_MAX_ATTEMPTS) {
+          console.error(`BW64-ENV renderer died on attempt ${attempt} of ${FD272_MAX_ATTEMPTS} (${error.message}); no guest verdict recorded`);
+          process.exitCode = 3;
+          return;
+        }
+        console.error(`BW64-ENV renderer died on attempt ${attempt} of ${FD272_MAX_ATTEMPTS} (${error.message}); relaunching once — the guest verdict is not recorded for this attempt`);
+      }
+    }
+  } finally {
+    await slot?.release();
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
