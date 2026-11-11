@@ -3,7 +3,14 @@
 # Usage: tools/bw64-build.sh [--check|--export-only]
 # EMSDK defaults to /opt/emsdk; an already active emcc is also supported.
 set -euo pipefail
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# Tree-scoped coordination (FD-224): a build replaces only its own tree's
+# dist/, so it publishes its claim and its lock under this tree's identity.
+# The claim file is named for the tree (sha256 of the canonical tree path,
+# first 16 hex chars); probes in other trees ignore it. pwd -P matters: the
+# probe side canonicalizes with realpath, so both sides must hash the same
+# physical path.
+TREE_HASH="$(printf '%s' "$REPO" | sha256sum | cut -c1-16)"
 EMSCRIPTEN_DIR="$REPO/project/emscripten"
 # BW64_BUILD_TARGET selects the makefile target (default unchanged). The JIT
 # target compiles the same runtime with -DBOXEDWINE_WASM_JIT, so it writes to
@@ -18,6 +25,7 @@ esac
 LOCKDIR="${BUILD_LOCK_DIR:-/tmp/bw64-build.lock.d}"
 INFO_FILE="$LOCKDIR/info"
 PROBE_SLOT_DIR="${PROBE_SLOT_DIR:-/tmp/bw64-probe-slots}"
+CLAIM_FILE="$PROBE_SLOT_DIR/build-pending-$TREE_HASH"
 WAIT_SECONDS="${BW64_BUILD_WAIT_SECONDS:-600}"
 OWNER="${BW64_BUILD_OWNER:-build:$$}"
 # BW64_PROFILE=1 adds --profiling-funcs at link time so the CPU profiler can
@@ -44,7 +52,25 @@ read_owner() {
     lock_pid="${BASH_REMATCH[1]}"
     lock_started="${BASH_REMATCH[2]}"
     lock_owner="${BASH_REMATCH[3]}"
+    lock_tree=""
+    # A 4th field is the builder's tree (an absolute path). Only treat the
+    # tail as a tree when it looks like one; an owner containing '|' stays
+    # an owner.
+    if [[ "$lock_owner" == *"|/"* ]]; then
+        lock_tree="${lock_owner##*|}"
+        lock_owner="${lock_owner%|*}"
+    fi
     [[ ${#lock_pid} -le 10 && "$lock_pid" -le 2147483647 ]] || return 1
+}
+# Write the lock info: pid|started|owner|tree (tree omitted when it cannot
+# be represented safely). Readers treat a missing tree as unknown and fail
+# closed, so a build never looks idle to a probe it could corrupt.
+write_lock_info() {
+    if [[ "$REPO" == *"|"* ]]; then
+        printf '%s|%s|%s\n' "$$" "$(date +%s)" "$OWNER" > "$INFO_FILE"
+    else
+        printf '%s|%s|%s|%s\n' "$$" "$(date +%s)" "$OWNER" "$REPO" > "$INFO_FILE"
+    fi
 }
 if [[ "$mode" == --check ]]; then
     if [[ ! -d "$LOCKDIR" ]]; then log 'BUILD IDLE'; exit 0; fi
@@ -67,9 +93,18 @@ fi
 # rounds; if it runs out (or a probe slips in three times) the build
 # falls back to the historical behaviour: drain the remainder under the
 # lock, then validate (dying on a live probe) exactly as before.
+# Tree scope (FD-224): coordination is per tree, because a build replaces
+# only its own tree's dist/. The claim is published under a file named for
+# this tree, the lock info records this tree, and the drain/validate scans
+# consider only this tree's probes — a probe in another tree, or testing a
+# remote dist, never blocks this build. Claim timing (FD-224): the claim is
+# published only while draining for a write or holding the lock. A build
+# merely queued for the lock publishes no claim, so probes in its tree can
+# start while it waits — a relay of queued builds no longer holds the
+# claim continuously and starves all probe starts.
 # Invariants are unchanged: at most one build runs the write phases
 # (bootstrap/compile/export), and a build enters them only after a probe
-# scan under the lock shows no live probe.
+# scan under the lock shows no live probe in its tree.
 acquire_lock() {
     local started_wait=$SECONDS
     local waited_logged=0
@@ -89,7 +124,7 @@ acquire_lock() {
         if (( SECONDS - started_wait >= WAIT_SECONDS )); then die "build lock busy or invalid: $LOCKDIR"; fi
         sleep 1
     done
-    printf '%s|%s|%s\n' "$$" "$(date +%s)" "$OWNER" > "$INFO_FILE"
+    write_lock_info
     log "lock acquired (pid=$$)"
 }
 cleanup() {
@@ -97,9 +132,11 @@ cleanup() {
         rm -f "$INFO_FILE"
         rmdir "$LOCKDIR" 2>/dev/null || true
     fi
-    # build-pending is claimed by builds that do not hold the lock yet, so
-    # remove it only when it names us. (probe-slots.mjs also treats a dead
-    # pid in build-pending as no build pending and unlinks it itself.)
+    unclaim_build_pending
+    # The legacy single build-pending file is no longer written here, but an
+    # older build may still have claimed it: remove it only when it names
+    # us. (probe-slots.mjs also treats a dead pid in build-pending as no
+    # build pending and unlinks it itself.)
     local bp
     bp=$(cat "$PROBE_SLOT_DIR/build-pending" 2>/dev/null) || bp=""
     if [[ "$bp" == "$$" ]]; then rm -f "$PROBE_SLOT_DIR/build-pending"; fi
@@ -108,24 +145,67 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-release_lock() { cleanup; }
+# Release the build lock without dropping the claim: after a slip the build
+# is still draining for a write, so same-tree probes must stay held back.
+release_lock() {
+    if read_owner && [[ "$lock_pid" == "$$" ]]; then
+        rm -f "$INFO_FILE"
+        rmdir "$LOCKDIR" 2>/dev/null || true
+    fi
+}
 claim_build_pending() {
-    # Publish our pid so new probes hold back while we drain. If another
-    # live build already claims the file, probes are held back either way.
+    # Publish our pid so new same-tree probes hold back while we drain.
+    # The claim names this tree only; probes in other trees ignore it. If
+    # another live build in this tree already claims it, probes are held
+    # back either way.
     mkdir -p "$PROBE_SLOT_DIR"
-    local bp
-    bp=$(cat "$PROBE_SLOT_DIR/build-pending" 2>/dev/null) || bp=""
-    if [[ "$bp" == "$$" ]]; then return 0; fi
-    if [[ "$bp" =~ ^[1-9][0-9]*$ ]] && pid_alive "$bp"; then return 0; fi
-    echo "$$" > "$PROBE_SLOT_DIR/build-pending"
+    local existing claim_pid
+    existing=$(cat "$CLAIM_FILE" 2>/dev/null) || existing=""
+    if [[ -n "$existing" ]]; then
+        claim_pid="${existing%%|*}"
+        if [[ "$claim_pid" == "$$" ]]; then return 0; fi
+        if [[ "$claim_pid" =~ ^[1-9][0-9]*$ ]] && pid_alive "$claim_pid"; then return 0; fi
+    fi
+    printf '%s|%s\n' "$$" "$REPO" > "$CLAIM_FILE"
+}
+unclaim_build_pending() {
+    local existing
+    existing=$(cat "$CLAIM_FILE" 2>/dev/null) || existing=""
+    if [[ "${existing%%|*}" == "$$" ]]; then rm -f "$CLAIM_FILE"; fi
+}
+# Prints the tree whose dist/ a probe tests, from its sidecar: the tree path,
+# the word REMOTE (tree null: a remote dist no local build can replace), or
+# the word UNKNOWN (no sidecar or no tree field). Always succeeds, so callers
+# under `set -e` can read the result without the script dying on it.
+slot_tree() {
+    local sidecar="$PROBE_SLOT_DIR/info-$(basename "$1").json"
+    if [[ ! -f "$sidecar" ]]; then printf 'UNKNOWN'; return 0; fi
+    local tree
+    tree=$(sed -n 's/.*"tree": *"\([^"]*\)".*/\1/p' "$sidecar" | head -n 1)
+    if [[ -n "$tree" ]]; then printf '%s' "$tree"; return 0; fi
+    if grep -q '"tree": *null' "$sidecar"; then printf 'REMOTE'; return 0; fi
+    printf 'UNKNOWN'
 }
 probes_busy() {
-    # Probe slots contain exactly one PID, never a concatenation of arbitrary digits.
-    local slot pid
-    for slot in "$PROBE_SLOT_DIR"/slot-* "$PROBE_SLOT_DIR"/light-* /tmp/bw64-probe.lock; do
+    # A probe blocks this build only when it tests this tree's dist. The
+    # legacy lock is global and still blocks (fail closed). A probe with
+    # no readable tree is unknown and blocks (fail closed); a probe in
+    # another tree, or testing a remote dist, never blocks.
+    if [[ -f /tmp/bw64-probe.lock ]]; then
+        local lpid
+        lpid=$(cat /tmp/bw64-probe.lock 2>/dev/null) || lpid=""
+        if [[ "$lpid" =~ ^[1-9][0-9]*$ ]] && pid_alive "$lpid"; then return 0; fi
+    fi
+    local slot pid tree
+    for slot in "$PROBE_SLOT_DIR"/slot-* "$PROBE_SLOT_DIR"/light-*; do
         [[ -e "$slot" ]] || continue
         pid=$(cat "$slot" 2>/dev/null) || continue
-        [[ "$pid" =~ ^[1-9][0-9]*$ ]] && pid_alive "$pid" && return 0
+        [[ "$pid" =~ ^[1-9][0-9]*$ ]] && pid_alive "$pid" || continue
+        tree=$(slot_tree "$slot")
+        if [[ "$tree" == REMOTE ]]; then continue; fi  # remote dist: never blocks
+        if [[ "$tree" == UNKNOWN ]]; then return 0; fi # unknown tree: fail closed
+        [[ "$tree" == "$REPO" ]] || continue # another tree: never blocks
+        return 0
     done
     return 1
 }
@@ -137,7 +217,7 @@ lock_contended() {
 }
 try_acquire_lock() {
     if mkdir "$LOCKDIR" 2>/dev/null; then
-        printf '%s|%s|%s\n' "$$" "$(date +%s)" "$OWNER" > "$INFO_FILE"
+        write_lock_info
         log "lock acquired (pid=$$)"
         return 0
     fi
@@ -148,7 +228,7 @@ try_acquire_lock() {
             rm -f "$INFO_FILE"
             rmdir "$LOCKDIR" 2>/dev/null || die "stale lock contains unexpected files: $LOCKDIR"
             if mkdir "$LOCKDIR" 2>/dev/null; then
-                printf '%s|%s|%s\n' "$$" "$(date +%s)" "$OWNER" > "$INFO_FILE"
+                write_lock_info
                 log "lock acquired (pid=$$)"
                 return 0
             fi
@@ -157,14 +237,37 @@ try_acquire_lock() {
     return 1
 }
 validate_probe_slots() {
-    local slot pid
+    # A live probe in this tree must die the build: the build must not
+    # replace dist/ under it. A live probe in another tree, or testing a
+    # remote dist, is left alone. A probe with no readable tree fails
+    # closed — but its sidecar lands microseconds after its slot file, so
+    # re-read once before dying on a probe that just started.
+    local slot pid tree
     for slot in "$PROBE_SLOT_DIR"/slot-* /tmp/bw64-probe.lock; do
         [[ -e "$slot" ]] || continue
         pid=$(cat "$slot" 2>/dev/null) || die "cannot read probe slot: $slot"
         [[ "$pid" =~ ^[1-9][0-9]*$ ]] || die "invalid probe slot (investigate before building): $slot"
         [[ ${#pid} -le 10 && "$pid" -le 2147483647 ]] || die "invalid probe slot PID: $slot"
-        if pid_alive "$pid"; then die "probe activity detected ($slot held by live pid $pid)"; fi
-        rm -f "$slot"
+        if pid_alive "$pid"; then
+            if [[ "$slot" == /tmp/bw64-probe.lock ]]; then
+                die "probe activity detected ($slot held by live pid $pid)"
+            fi
+            tree=$(slot_tree "$slot")
+            if [[ "$tree" == REMOTE ]]; then continue; fi  # remote dist: never blocks
+            if [[ "$tree" == UNKNOWN ]]; then
+                sleep 1
+                tree=$(slot_tree "$slot")
+                if [[ "$tree" == UNKNOWN ]]; then die "probe activity detected ($slot held by live pid $pid with no readable tree)"; fi
+                if [[ "$tree" == REMOTE ]]; then continue; fi
+            fi
+            if [[ "$tree" == "$REPO" ]]; then die "probe activity detected ($slot held by live pid $pid)"; fi
+            continue
+        fi
+        # A dead slot in this tree is stale and may be removed; a dead
+        # slot in another tree is that tree's business.
+        if [[ "$slot" == /tmp/bw64-probe.lock ]]; then rm -f "$slot"; continue; fi
+        tree=$(slot_tree "$slot")
+        if [[ "$tree" == "$REPO" ]]; then rm -f "$slot"; fi
     done
 }
 if [[ "${BW64_BUILD_FORCE:-0}" == 1 ]]; then
@@ -176,10 +279,12 @@ else
     drain_logged=0
     lock_logged=0
     while :; do
-        claim_build_pending
         if probes_busy && (( drain_budget > 0 )); then
-            # Drain WITHOUT the build lock. A contended lock still fails
-            # on schedule even while we are only draining.
+            # Drain WITHOUT the build lock. The claim is published here —
+            # while same-tree probes are running and this build is draining
+            # for a write — so no new same-tree probe starts. A contended
+            # lock still fails on schedule even while only draining.
+            claim_build_pending
             if lock_contended && (( SECONDS >= lock_deadline )); then
                 die "build lock busy or invalid: $LOCKDIR"
             fi
@@ -193,9 +298,9 @@ else
             continue
         fi
         if try_acquire_lock; then
-            # Historical state at this point: sole lock holder,
-            # build-pending names us. Re-scan before any write phase.
-            echo "$$" > "$PROBE_SLOT_DIR/build-pending"
+            # Sole lock holder; the claim names this tree. Re-scan before
+            # any write phase.
+            claim_build_pending
             if ! probes_busy; then
                 validate_probe_slots
                 break
@@ -216,6 +321,10 @@ else
             release_lock
             continue
         fi
+        # Queued for the lock with no same-tree probe running: drop the
+        # claim so probes in this tree can start while this build waits
+        # (FD-224 — the claim must not be held for the whole queue).
+        unclaim_build_pending
         # Same duty as the drain message above: a build queued behind
         # another build logs that fact once instead of sitting silent.
         if (( lock_logged == 0 )) && lock_contended; then

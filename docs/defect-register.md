@@ -9953,6 +9953,18 @@ do not close the entry until they land.
   `test-results/probepar/` on branch
   `lane-probe-parallel`. (Number lane-local; the next
   composition audit settles it.)
+  STATUS 2026-11-10 (lane-fd224, branch `lane-fd224`): fix
+  implemented — tree-scoped claims and lock, claim published
+  only while draining or holding the lock. Proven at the
+  coordination level: unit tests 16/16, controlled
+  starvation experiment 5/5 on the fix (and the old code
+  reproduces the starvation), real-script claim-timing tests
+  A and B pass. NOT YET CLOSED: the full build and the
+  queue gate could not run — disk at 4.1 GB, below the
+  5 GB floor — so the entry stays open until those run on
+  the fix commit. Record
+  `docs/reports/fd224-probe-starvation-20261110.md`;
+  evidence `test-results/fd224/`.
 
 - **FD-225 — The D22 JVM-ergonomics probe's settings run
   waits for a heap-size label the bundled JDK never prints,

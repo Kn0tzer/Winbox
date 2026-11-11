@@ -81,6 +81,34 @@ test('live and malformed probe slots reject a build before any asset mutation', 
   });
 });
 
+test('the lock info records the builder tree and waitForBuildIdle ignores builds in other trees (FD-224)', async () => {
+  await withLock(async ({ lock, module }) => {
+    const otherTree = '/tmp/fd224-other-tree';
+    mkdirSync(lock);
+    // A build in another tree never blocks a probe in this tree.
+    writeFileSync(join(lock, 'info'), `${process.pid}|1|test|${otherTree}\n`);
+    assert.equal(module.buildLockInfo().tree, otherTree);
+    assert.equal(module.buildLockInfo().owner, 'test');
+    await module.waitForBuildIdle({ timeoutMs: 1000, pollMs: 50, tree: repoRoot });
+    // A remote dist is blocked by no local build at all.
+    await module.waitForBuildIdle({ timeoutMs: 1000, pollMs: 50, tree: null });
+    // A build in this tree still blocks (negative control).
+    writeFileSync(join(lock, 'info'), `${process.pid}|1|test|${repoRoot}\n`);
+    assert.equal(module.buildLockInfo().tree, repoRoot);
+    await assert.rejects(
+      () => module.waitForBuildIdle({ timeoutMs: 500, pollMs: 50, tree: repoRoot }),
+      /timed out after 500ms waiting for build lock/,
+    );
+    // A lock with no tree (older builds) still blocks every tree, fail closed.
+    writeFileSync(join(lock, 'info'), `${process.pid}|1|test\n`);
+    assert.equal(module.buildLockInfo().tree, null);
+    await assert.rejects(
+      () => module.waitForBuildIdle({ timeoutMs: 500, pollMs: 50, tree: repoRoot }),
+      /timed out after 500ms waiting for build lock/,
+    );
+  });
+});
+
 test('build-lock timeout stays at ten minutes unless a positive integer override is set', () => {
   assert.equal(defaultBuildLockTimeoutMs(''), 600000);
   assert.equal(defaultBuildLockTimeoutMs(undefined), 600000);
