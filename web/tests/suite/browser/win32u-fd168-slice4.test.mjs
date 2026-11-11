@@ -14,7 +14,9 @@ export default class Win32uFd168Slice4Test extends ProbeTest {
   constructor() {
     super({
       tag: 'win32u-fd168-slice4',
-      timeoutMs: 900000,
+      // FD-274: the runner's outer timeout is timeoutMs + 60 s, so this
+      // must cover the 2400 s boot wait + fixture under load.
+      timeoutMs: 3000000,
     });
     this.guestArchitectures = ['x64'];
   }

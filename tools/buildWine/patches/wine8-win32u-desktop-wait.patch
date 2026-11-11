@@ -45,7 +45,13 @@ index e2c9ba0..a52d518 100644
 +     * creation then fails, even though the desktop comes up fine
 +     * moments later. Probe patiently until the driver (or a real
 +     * driver error) is published; the first probe is unchanged, so a
-+     * desktop that is already up costs nothing. */
++     * desktop that is already up costs nothing. FD-274 (2026-11-11):
++     * the 300 s cap (600 attempts) is exhausted when the desktop
++     * parade runs slower still -- a fresh 64-bit boot under box load
++     * 18-27 took ~1780 s to reach desktop init, so the publication
++     * lagged the first driver load by more than 300 s and the session
++     * failed with the null driver ("The explorer process failed to
++     * start"). Raised to 3600 attempts (1800 s). */
 +    for (attempt = 0; ; attempt++)
      {
 -        static const WCHAR nullW[] = {'n','u','l','l',0};
@@ -106,7 +112,7 @@ index e2c9ba0..a52d518 100644
          }
 -        else
 +
-+        if (attempt >= 600) break;
++        if (attempt >= 3600) break;
          {
 -            __wine_set_user_driver( &null_user_driver, WINE_GDI_DRIVER_VERSION );
 -            ret = TRUE;
@@ -146,8 +152,11 @@ index 145e12a..a59da3a 100644
 +             * so the graphics driver is never published and every
 +             * process latches the null driver permanently. Wait
 +             * properly instead; the wait still returns at once if
-+             * the desktop process exits. */
-+            NtUserWaitForInputIdle( process, 300000, FALSE );
++             * the desktop process exits. FD-274 (2026-11-11): the
++             * 300 s wait is exhausted the same way under load 18-27
++             * -- the desktop process needs far longer than 300 s to
++             * finish initializing. Raised to 1800000 (1800 s). */
++            NtUserWaitForInputIdle( process, 1800000, FALSE );
              NtClose( thread );
              NtClose( process );
          }
