@@ -145,11 +145,11 @@ WINE8_BACKPORT_PINS = {
     'kernelbase.dll': '5d94b2639e2e408da5fc4fd2fc27466b990ced859603ef3e123ff4ef85c3f251',
     'kernel32.dll': 'ccf67fb5bba80af571952c5beefae8c4ca9f92ca4787da9a2424fc4a49fcd2e1',
     'iphlpapi.dll': '1653f8600391d81727a9391cffbed3c5f9bad2a76564c5fd4f2029dc815b4f80',
-    'win32u.dll': 'defa9a4eb91ab3b97a827dff797e009efc764507aaaf5b2df476e9b1778669f8',
+    'win32u.dll': '424ee50377eae732fedf593ea202a5994571223bba9bdb1ecc6902f658405b88',
     # The unix half of win32u (FD-01): the desktop-wait patch lives in
     # this module; pinning only the DLL is what let the patch ship in
     # no binary (FD-43).
-    'win32u.so': '22c822e3be07ca267fefb84e49a6ddd54cefa08a476e9d53e154f0d5f197c6fa',
+    'win32u.so': '513d71262241583f56e8ffb40459ea356efb7e10b7dafa1257484cf6c6f7cef3',
     # FD-167: the MSVC runtime throw helpers a bundled demo library
     # imports, and SetupDiGetDeviceInterfaceAlias, stop being spec
     # stubs (see wine8-backports-x86_64/README.md).
