@@ -8853,6 +8853,39 @@ do not close the entry until they land.
   (see the batch-11 merge record for the pair's
   hashes and the census proof).
 
+  *Addendum — fourth draw-down (lane-fd168-slice4, 2026-11-11;
+  partial, the entry stays open).* Three more x86-64 win32u names
+  are real implementations in the Wine 8 backports build (patch
+  `tools/buildWine/patches/wine8-win32u-fd168-slice4.patch`,
+  fix commit `0fd9610e2`): NtUserGetTopLevelWindow (forwards to
+  NtUserGetAncestor(hwnd, GA_ROOT)), NtGdiGetTextExtent (calls
+  NtGdiGetTextExtentExW with flags passed through — 0 is the
+  GetTextExtentPoint32W form, 1 the GetTextExtentPointI
+  glyph-index form), and NtGdiGetGlyphIndicesWInternal (forwards
+  to NtGdiGetGlyphIndicesW with flags = iMode, bSubset ignored).
+  Runtime restaged on the current vintage: wine64.zip
+  `e1479bea…`, release `runtime-assets-20261107-fd168s4`; the
+  census regenerated in the same change: x64 win32u stubs
+  903 -> 900, i386 unchanged at 1,111, FD-168 total
+  2,014 -> 2,011, only x64/win32u.dll changed across all 1,171
+  tables. Proof: guest fixture
+  `tools/guest-fixtures/win32u-fd168s4.c` (21 checks) PASS twice
+  green (RESULT 0, every check ok=1); against the previous
+  shipped runtime (wine64.zip `13f254e3…`) RESULT 18, every
+  new-export check failing at the stub guard. One fixture repair
+  was needed first and is recorded in the lane record: the
+  flags-1 text-extent check passed the text string where the
+  glyph-index form takes the index array; the repaired check
+  passes the GetGlyphIndicesW indices. The negative control
+  took four attempts — the first three timed out in the guest
+  boot under box load (fresh 64-bit boots now take ~500–600 s
+  against a 600 s harness timeout). Checks: JS unit on the
+  built tree 354 passed / 0 failed; JS legacy 116 pass / 0 fail;
+  citations 0; completeness checker and bootstrap 0 failures;
+  dist build "Browser export verified" with the wasm
+  byte-identical to batch 16. FD-168 stays open at 2,011.
+  Record: `docs/reports/fd168-win32u-drawdown4-20261111.md`.
+
 - **FD-169 — The shipped Microsoft C/C++ runtime DLLs carry 10,698
   validated unimplemented stubs: msvcp60–140, msvcr70–120 (+_app),
   ucrtbase, concrt140, msvcm80/90 and the api-ms-crt set.** *(Medium.
