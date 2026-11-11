@@ -10,7 +10,7 @@ index e2c9ba0..a52d518 100644
  
      static const WCHAR prop_nameW[] =
          {'_','_','w','i','n','e','_','d','i','s','p','l','a','y','_','d','e','v','i','c','e',
-@@ -943,47 +944,81 @@ static BOOL load_desktop_driver( HWND hwnd )
+@@ -943,47 +944,87 @@ static BOOL load_desktop_driver( HWND hwnd )
      user_check_not_lock();
  
      asciiz_to_unicode( driver_load_error, "The explorer process failed to start." );  /* default error */
@@ -137,7 +137,7 @@ diff --git a/dlls/win32u/winstation.c b/dlls/win32u/winstation.c
 index 145e12a..a59da3a 100644
 --- a/dlls/win32u/winstation.c
 +++ b/dlls/win32u/winstation.c
-@@ -478,7 +478,18 @@ HWND get_desktop_window(void)
+@@ -478,7 +478,21 @@ HWND get_desktop_window(void)
          {
              NtResumeThread( thread, NULL );
              TRACE_(win)( "started explorer\n" );
