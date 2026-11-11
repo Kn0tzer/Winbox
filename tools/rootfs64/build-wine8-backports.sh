@@ -53,6 +53,7 @@ PATCHES=(
     wine8-win32u-fd168-backports.patch
     wine8-win32u-fd168-slice2.patch
     wine8-win32u-fd168-slice3.patch
+    wine8-win32u-fd168-slice4.patch
     wine8-msvcrt-fd169-crt.patch
     wine8-fd169r-crt2.patch
     wine8-fd170-contracts.patch

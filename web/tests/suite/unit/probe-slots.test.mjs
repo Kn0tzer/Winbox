@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -20,7 +21,7 @@ async function freshSlotDir(t) {
   return dir;
 }
 
-function startAcquire(dir, { slots = 2, lightSlots = 2, kind = 'heavy', timeoutMs, mode = 'hold', demo = 'unit-probe' } = {}) {
+function startAcquire(dir, { slots = 2, lightSlots = 2, kind = 'heavy', timeoutMs, mode = 'hold', demo = 'unit-probe', env = {} } = {}) {
   const source = `
     import { acquireProbeSlot } from ${JSON.stringify(probeModule)};
     const mode = ${JSON.stringify(mode)};
@@ -53,6 +54,12 @@ function startAcquire(dir, { slots = 2, lightSlots = 2, kind = 'heavy', timeoutM
       PROBE_SLOT_TIMEOUT_MS: '10000',
       PROBE_KIND: kind,
       DEMO: demo,
+      // The child's tree is this repo (cwd + module path); keep the dist
+      // overrides clear so the tree never resolves to a remote dist.
+      BW_TEST_BASE_URL: '',
+      BW_TEST_DIST: '',
+      WINE_DIST_DIR: '',
+      ...env,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -211,10 +218,11 @@ test('slot content stays pid-only and sidecar metadata is removed on release', a
   const acquired = await child.waitFor(event => event.event === 'acquired');
   assert.equal(await readFile(join(dir, 'slot-0'), 'utf8'), `${acquired.pid}\n`);
   const info = JSON.parse(await readFile(join(dir, 'info-slot-0.json'), 'utf8'));
-  assert.deepEqual(Object.keys(info).sort(), ['argv', 'cwd', 'demo', 'jit', 'kind', 'pid', 'startedAt'].sort());
+  assert.deepEqual(Object.keys(info).sort(), ['argv', 'cwd', 'demo', 'jit', 'kind', 'pid', 'startedAt', 'tree'].sort());
   assert.equal(info.pid, acquired.pid);
   assert.equal(info.kind, 'heavy');
   assert.equal(info.cwd, repoRoot);
+  assert.equal(info.tree, repoRoot);
   assert.deepEqual(info.argv, acquired.argv);
   assert.equal(info.demo, 'unit-probe');
   assert.equal(info.jit, process.env.JIT ?? null);
@@ -241,4 +249,36 @@ test('invalid slot kind is rejected', async t => {
   t.after(() => child.stop());
   const error = await child.waitFor(event => event.event === 'error');
   assert.match(error.message, /kind must be 'heavy' or 'light'/);
+});
+
+function claimFileName(tree) {
+  return `build-pending-${createHash('sha256').update(tree).digest('hex').slice(0, 16)}`;
+}
+
+test('a build claim from another tree does not block probe acquisition (FD-224)', async t => {
+  const dir = await freshSlotDir(t);
+  const otherTree = '/tmp/fd224-other-tree';
+  await writeFile(join(dir, claimFileName(otherTree)), `${process.pid}|${otherTree}\n`);
+  const child = startAcquire(dir, { slots: 1, timeoutMs: 5000, mode: 'release' });
+  t.after(() => child.stop());
+  const acquired = await child.waitFor(event => event.event === 'acquired', 8000);
+  assert.ok(acquired.pid > 0);
+});
+
+test('a build claim from this tree still blocks probe acquisition (FD-224)', async t => {
+  const dir = await freshSlotDir(t);
+  await writeFile(join(dir, claimFileName(repoRoot)), `${process.pid}|${repoRoot}\n`);
+  const child = startAcquire(dir, { slots: 1, timeoutMs: 3000, mode: 'release' });
+  t.after(() => child.stop());
+  const error = await child.waitFor(event => event.event === 'error', 8000);
+  assert.match(error.message, /^timed out waiting for a probe slot/);
+});
+
+test('the legacy single build-pending claim still blocks every tree (FD-224)', async t => {
+  const dir = await freshSlotDir(t);
+  await writeFile(join(dir, 'build-pending'), `${process.pid}\n`);
+  const child = startAcquire(dir, { slots: 1, timeoutMs: 3000, mode: 'release' });
+  t.after(() => child.stop());
+  const error = await child.waitFor(event => event.event === 'error', 8000);
+  assert.match(error.message, /^timed out waiting for a probe slot/);
 });

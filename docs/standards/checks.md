@@ -103,7 +103,16 @@ partway has failed, however many PASS lines precede the abort.
   starve regardless of slot counts — three suite boots
   each failed at the 900 s slot wait without testing
   anything while a relay of queued builds held the
-  `build-pending` claim for over 100 minutes. Slot
+  `build-pending` claim for over 100 minutes. Fixed
+  2026-11-10 (FD-224, record
+  `docs/reports/fd224-probe-starvation-20261110.md`):
+  coordination is scoped to the tree whose `dist/` is at
+  stake, and the claim is published only while draining
+  for a write or holding the lock, so a queued build no
+  longer blocks probes — proven by a controlled
+  starvation experiment and by the real build script's
+  claim timing (the full build and queue gate are still
+  owed: disk was below the 5 GB floor). Slot
   defaults are unchanged (heavy 2, light 2); the 2×
   verification in `web/tests/parallel-probe-README.md`
   remains the highest proven probe concurrency, and a

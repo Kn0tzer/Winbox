@@ -1,0 +1,145 @@
+diff --git a/dlls/win32u/syscall.c b/dlls/win32u/syscall.c
+index 3307758..dbfdd1a 100644
+--- a/dlls/win32u/syscall.c
++++ b/dlls/win32u/syscall.c
+@@ -222,6 +222,7 @@ static void * const syscalls[] =
+     NtUserGetThreadDesktop,
+     NtUserGetThreadState,
+     NtUserGetTitleBarInfo,
++    NtUserGetTopLevelWindow,
+     NtUserGetUpdateRect,
+     NtUserGetUpdateRgn,
+     NtUserGetUpdatedClipboardFormats,
+diff --git a/dlls/win32u/win32u.spec b/dlls/win32u/win32u.spec
+index c23cc1d..03c1146 100644
+--- a/dlls/win32u/win32u.spec
++++ b/dlls/win32u/win32u.spec
+@@ -484,7 +484,7 @@
+ @ stdcall NtGdiGetFontUnicodeRanges(long ptr)
+ @ stub NtGdiGetGammaRampCapability
+ @ stdcall NtGdiGetGlyphIndicesW(long wstr long ptr long)
+-@ stub NtGdiGetGlyphIndicesWInternal
++@ stdcall NtGdiGetGlyphIndicesWInternal(long wstr long ptr long long)
+ @ stdcall NtGdiGetGlyphOutline(long long long ptr long ptr ptr long)
+ @ stdcall NtGdiGetKerningPairs(long long ptr)
+ @ stub NtGdiGetLinkedUFIs
+@@ -516,7 +516,7 @@
+ @ stub NtGdiGetSuggestedOPMProtectedOutputArraySize
+ @ stdcall -syscall NtGdiGetSystemPaletteUse(long)
+ @ stdcall NtGdiGetTextCharsetInfo(long ptr long)
+-@ stub NtGdiGetTextExtent
++@ stdcall NtGdiGetTextExtent(long wstr long ptr long)
+ @ stdcall NtGdiGetTextExtentExW(long wstr long long ptr ptr ptr long)
+ @ stdcall NtGdiGetTextFaceW(long long ptr long)
+ @ stdcall NtGdiGetTextMetricsW(long ptr long)
+@@ -998,7 +998,7 @@
+ @ stdcall -syscall NtUserGetThreadDesktop(long)
+ @ stdcall -syscall NtUserGetThreadState(long)
+ @ stdcall -syscall NtUserGetTitleBarInfo(long ptr)
+-@ stub NtUserGetTopLevelWindow
++@ stdcall -syscall NtUserGetTopLevelWindow(long)
+ @ stub NtUserGetTouchInputInfo
+ @ stub NtUserGetTouchValidationStatus
+ @ stub NtUserGetUniformSpaceMapping
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 71aab9f..ca11994 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -739,6 +739,19 @@ HWND WINAPI NtUserGetAncestor( HWND hwnd, UINT type )
+     return ret;
+ }
+ 
++/**********************************************************************
++ *           NtUserGetTopLevelWindow (win32u.@)
++ *
++ * The top-level window of a window is its root ancestor: the window
++ * itself when it is already top-level, else the ancestor just below
++ * the desktop. NtUserGetAncestor( hwnd, GA_ROOT ) computes exactly
++ * that walk, so this export is that call.
++ */
++HWND WINAPI NtUserGetTopLevelWindow( HWND hwnd )
++{
++    return NtUserGetAncestor( hwnd, GA_ROOT );
++}
++
+ /**********************************************************************
+  *           NtUserIsTopLevelWindow (win32u.@)
+  */
+diff --git a/dlls/win32u/wrappers.c b/dlls/win32u/wrappers.c
+index 573307c..61f6d2b 100644
+--- a/dlls/win32u/wrappers.c
++++ b/dlls/win32u/wrappers.c
+@@ -304,6 +304,23 @@ DWORD WINAPI NtGdiGetGlyphIndicesW( HDC hdc, const WCHAR *str, INT count,
+     return unix_funcs->pNtGdiGetGlyphIndicesW( hdc, str, count, indices, flags );
+ }
+ 
++DWORD WINAPI NtGdiGetGlyphIndicesWInternal( HDC hdc, const WCHAR *str, INT count,
++                                            WORD *indices, DWORD mode, BOOL subset )
++{
++    /* The public NtGdiGetGlyphIndicesW is this call with subset FALSE
++     * (ReactOS's public entry forwards to its Internal the same way),
++     * and ReactOS's font engine carries bSubset as an unimplemented
++     * FIXME, so the subset flag has no observable effect here either.
++     * The count checks are ReactOS's win32k-side validation, kept so
++     * the edge cases answer the same way with or without the flag. */
++    (void)subset;
++    if (count < 0) return GDI_ERROR;
++    if (!count && !str && !indices && !mode)
++        return NtGdiGetGlyphIndicesW( hdc, NULL, 0, NULL, 0 );
++    if (!count) return GDI_ERROR;
++    return NtGdiGetGlyphIndicesW( hdc, str, count, indices, mode );
++}
++
+ DWORD WINAPI NtGdiGetGlyphOutline( HDC hdc, UINT ch, UINT format, GLYPHMETRICS *metrics,
+                                    DWORD size, void *buffer, const MAT2 *mat2,
+                                    BOOL ignore_rotation )
+@@ -368,6 +385,16 @@ BOOL WINAPI NtGdiGetTextExtentExW( HDC hdc, const WCHAR *str, INT count, INT max
+     return unix_funcs->pNtGdiGetTextExtentExW( hdc, str, count, max_ext, nfit, dxs, size, flags );
+ }
+ 
++BOOL WINAPI NtGdiGetTextExtent( HDC hdc, const WCHAR *str, INT count, SIZE *size, UINT flags )
++{
++    /* ReactOS's implementation is this exact call: the extent of the
++     * whole string is GetTextExtentExW with no fit limit, no per-char
++     * advances, and the caller's flags (0 for a character string, 1
++     * for glyph indices, the same values GetTextExtentPoint32W and
++     * GetTextExtentPointI pass). max_ext is unused when nfit is NULL. */
++    return NtGdiGetTextExtentExW( hdc, str, count, 0, NULL, NULL, size, flags );
++}
++
+ INT WINAPI NtGdiGetTextFaceW( HDC hdc, INT count, WCHAR *name, BOOL alias_name )
+ {
+     if (!unix_funcs) return 0;
+diff --git a/include/ntgdi.h b/include/ntgdi.h
+index d161f53..cbb812f 100644
+--- a/include/ntgdi.h
++++ b/include/ntgdi.h
+@@ -349,6 +349,8 @@ BOOL     WINAPI NtGdiGetFontFileInfo( DWORD instance_id, DWORD file_index, struc
+ DWORD    WINAPI NtGdiGetFontUnicodeRanges( HDC hdc, GLYPHSET *lpgs );
+ DWORD    WINAPI NtGdiGetGlyphIndicesW( HDC hdc, const WCHAR *str, INT count,
+                                        WORD *indices, DWORD flags );
++DWORD    WINAPI NtGdiGetGlyphIndicesWInternal( HDC hdc, const WCHAR *str, INT count,
++                                               WORD *indices, DWORD mode, BOOL subset );
+ DWORD    WINAPI NtGdiGetGlyphOutline( HDC hdc, UINT ch, UINT format, GLYPHMETRICS *metrics,
+                                       DWORD size, void *buffer, const MAT2 *mat2,
+                                       BOOL ignore_rotation );
+@@ -371,6 +373,7 @@ DWORD    WINAPI NtGdiGetSpoolMessage( void *ptr1, DWORD data2, void *ptr3, DWORD
+ UINT     WINAPI NtGdiGetSystemPaletteUse( HDC hdc );
+ UINT     WINAPI NtGdiGetCharSet( HDC hdc );
+ UINT     WINAPI NtGdiGetTextCharsetInfo( HDC hdc, FONTSIGNATURE *fs, DWORD flags );
++BOOL     WINAPI NtGdiGetTextExtent( HDC hdc, const WCHAR *str, INT count, SIZE *size, UINT flags );
+ BOOL     WINAPI NtGdiGetTextExtentExW( HDC hdc, const WCHAR *str, INT count, INT max_ext,
+                                        INT *nfit, INT *dxs, SIZE *size, UINT flags );
+ INT      WINAPI NtGdiGetTextFaceW( HDC hdc, INT count, WCHAR *name, BOOL alias_name );
+diff --git a/include/ntuser.h b/include/ntuser.h
+index f9b7164..564e651 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -829,6 +829,7 @@ HDESK   WINAPI NtUserGetThreadDesktop( DWORD thread );
+ BOOL    WINAPI NtUserGetCurrentInputMessageSource( INPUT_MESSAGE_SOURCE *source );
+ ULONG_PTR WINAPI NtUserGetThreadState( USERTHREADSTATECLASS cls );
+ BOOL    WINAPI NtUserGetTitleBarInfo( HWND hwnd, TITLEBARINFO *info );
++HWND    WINAPI NtUserGetTopLevelWindow( HWND hwnd );
+ INT     WINAPI NtUserGetUpdateRgn( HWND hwnd, HRGN hrgn, BOOL erase );
+ BOOL    WINAPI NtUserGetUpdatedClipboardFormats( UINT *formats, UINT size, UINT *out_size );
+ BOOL    WINAPI NtUserGetUpdateRect( HWND hwnd, RECT *rect, BOOL erase );

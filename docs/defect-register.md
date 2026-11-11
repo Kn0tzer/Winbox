@@ -8853,6 +8853,39 @@ do not close the entry until they land.
   (see the batch-11 merge record for the pair's
   hashes and the census proof).
 
+  *Addendum — fourth draw-down (lane-fd168-slice4, 2026-11-11;
+  partial, the entry stays open).* Three more x86-64 win32u names
+  are real implementations in the Wine 8 backports build (patch
+  `tools/buildWine/patches/wine8-win32u-fd168-slice4.patch`,
+  fix commit `0fd9610e2`): NtUserGetTopLevelWindow (forwards to
+  NtUserGetAncestor(hwnd, GA_ROOT)), NtGdiGetTextExtent (calls
+  NtGdiGetTextExtentExW with flags passed through — 0 is the
+  GetTextExtentPoint32W form, 1 the GetTextExtentPointI
+  glyph-index form), and NtGdiGetGlyphIndicesWInternal (forwards
+  to NtGdiGetGlyphIndicesW with flags = iMode, bSubset ignored).
+  Runtime restaged on the current vintage: wine64.zip
+  `e1479bea…`, release `runtime-assets-20261107-fd168s4`; the
+  census regenerated in the same change: x64 win32u stubs
+  903 -> 900, i386 unchanged at 1,111, FD-168 total
+  2,014 -> 2,011, only x64/win32u.dll changed across all 1,171
+  tables. Proof: guest fixture
+  `tools/guest-fixtures/win32u-fd168s4.c` (21 checks) PASS twice
+  green (RESULT 0, every check ok=1); against the previous
+  shipped runtime (wine64.zip `13f254e3…`) RESULT 18, every
+  new-export check failing at the stub guard. One fixture repair
+  was needed first and is recorded in the lane record: the
+  flags-1 text-extent check passed the text string where the
+  glyph-index form takes the index array; the repaired check
+  passes the GetGlyphIndicesW indices. The negative control
+  took four attempts — the first three timed out in the guest
+  boot under box load (fresh 64-bit boots now take ~500–600 s
+  against a 600 s harness timeout). Checks: JS unit on the
+  built tree 354 passed / 0 failed; JS legacy 116 pass / 0 fail;
+  citations 0; completeness checker and bootstrap 0 failures;
+  dist build "Browser export verified" with the wasm
+  byte-identical to batch 16. FD-168 stays open at 2,011.
+  Record: `docs/reports/fd168-win32u-drawdown4-20261111.md`.
+
 - **FD-169 — The shipped Microsoft C/C++ runtime DLLs carry 10,698
   validated unimplemented stubs: msvcp60–140, msvcr70–120 (+_app),
   ucrtbase, concrt140, msvcm80/90 and the api-ms-crt set.** *(Medium.
@@ -9910,7 +9943,7 @@ do not close the entry until they land.
   central-directory comparison against the pre-cut archive
   showing entry types preserved. Found by the batch-10
   merge lane, 2026-11-07, from FD-199's byte-level repair
-  evidence.
+  evidence. **CLOSED 2026-11-11 — see CL-205.** Fix commit `7bede8831` on branch `lane-fd200`: the drivers merge now writes carried entries with their own ZipInfo (mirroring cc1aecbaa), entries the payload replaces keep their old ZipInfo with only the content changing, and a post-merge check fails loudly if any pre-existing entry changed type, mode, or date. Proof: unfixed script on a staged stale archive flattened wineserver 0o120755 -> 0o600 and reset all 1263 dates; fixed script yields 18 additions only, 0 type/mode/date/data changes across all 1263 carried entries, testzip clean. Record: `docs/reports/fd200-archive-producer-symlink-flattening-20261111.md`.
 
 - **FD-224 — Browser probes starve behind a build queue:
   no probe can start while any build is queued, so probe
@@ -9953,6 +9986,24 @@ do not close the entry until they land.
   `test-results/probepar/` on branch
   `lane-probe-parallel`. (Number lane-local; the next
   composition audit settles it.)
+  **CLOSED 2026-11-11 — see CL-206.** Fix commit `a13bf95b8` (branch `lane-fd224`):
+  tree-scoped build claims and lock — a build publishes its claim under
+  `build-pending-<sha16(tree)>` holding `pid|tree` and probes ignore
+  claims from any other tree; the claim is published only while draining
+  for a write or holding the lock, so a build merely queued for the lock
+  publishes no claim; the lock info carries the builder's tree and
+  `waitForBuildIdle` waits only for a build in the probe's own tree; the
+  legacy single `build-pending` file still blocks every tree, fail closed.
+  Proof: unit tests 16/16; controlled starvation experiment 5/5 on the fix
+  (old code reproduces the starvation); real-script claim-timing tests A
+  and B pass; full browser build from the fix commit: "Browser export
+  verified", wasm byte-identical to batch 16 (`bcd9d500…`, 5,756,971 B),
+  BUILD_INFO git_sha `a13bf95b8`. Record
+  `docs/reports/fd224-probe-starvation-20261110.md`; evidence
+  `test-results/fd224/`. Light checks: pipeline #92 on the fix commit:
+  verify-source `a13bf95b8`, citations 0, js-legacy 0, js-unit 352/2 known
+  artifacts, native 706/0 in 297 s + 121/0 in 30 s, run-native 0 — the
+  standing acceptance shape.
 
 - **FD-225 — The D22 JVM-ergonomics probe's settings run
   waits for a heap-size label the bundled JDK never prints,
@@ -11308,6 +11359,8 @@ do not close the entry until they land.
 - **FD-272 — The live browser-program check loses its test-browser tab ("Target crashed") in 3 of 8 runs, with zero faults in the guest.** *(Medium)* During the batch-15 + FD-271 deploy's live checks (2026-11-10), runs b1, b6 and b8 ended with the test browser's renderer dying ("Target crashed"); every preserved console shows 0 guest fault lines, and the machine's swap was full (11G/11G used) at the time. The guest never faulted — the test rig died, not the program — so the check fails spuriously and a ship decision has to be adjudicated by hand. Evidence: worktree wt-deploy-batch15, test-results/deploy-batch15-fd271-20261110/chromium-consumer-b1, -b6, -b8. Filed by the coordinator from the deploy lane's report, 2026-11-10. **CLOSED 2026-11-10 — see CL-204.** Fix commit `bc0ed729e` (`web/tests/demo-matrix.mjs` only, test driver): the driver gates each attempt on free memory (exit 3 if the gate never passes), retries once on a renderer death preserving the dead attempt's console/log, and races the mapped wait against the page crash event so a renderer-only death fails fast instead of burning the 900 s timeout. Proof: constrained runs kill the attempt-1 renderer in a 2G cap cgroup (dmesg `oom_memcg=/fd272-browser-cap`); the fixed driver relaunches within ~31 s and the retry completes mapped with 1,273,748 lit px, pageErrors 0, exit 0; forced gate trip exits 3 with no browser launched. Record `docs/reports/fd272-consumer-tab-crash-20261110.md`. Light checks: pipeline #88 on the fix commit: verify-source 6e7b24431, citations 0, js-legacy 0, js-unit 352/2 known artifacts, native 706/0 + 121/0, run-native 0 — the standing acceptance shape.
 
 - **FD-273 — The supporting-programs check fails on its web-page test under load: guest threads sit waiting on a socket lock, and the check's wait runs out.** *(Medium)* During the same deploy's live checks, the supporting-programs check failed 3 times — twice on the new build, then identically on the previous build (671,032 ms, same socket-wait stack dumps) under machine load 12–15. The guest threads are stuck waiting on `KUnixSocketObject::lockCond` while the check allows 180 s, far shorter than a 64-bit boot takes under that load. Not yet known whether the wait is simply too short (a test-only fix) or the guest genuinely stalls on socket progress under load. Distinct from the FD-15 entry, which disproved a socket suspicion for a different wait (the boot thread's ~16 s silence). Evidence: same deploy evidence dir, supporting-programs logs. Filed by the coordinator from the deploy lane's report, 2026-11-10. **CLOSED 2026-11-10 — see CL-203.** The wait was too short, not a stall: the Gecko startup stage takes ~130 s at box load ~9 and over 180 s at load 12—15 while the guest keeps progressing (discovery probe: RESULT at 130.2 s after spawn, load 8—9.5; the lockCond thread in the failing runs' stack dumps is an ordinary blocking socket read). Fix commit `de2d751cc` on branch `lane-fd273` (test-only): the MSHTML wait in `common-dependencies.test.mjs` goes 180 s — 360 s and the test timeout 1,200 s — 1,500 s. Proof: the full test passes end to end on the live build at load 12—14 (504,647 ms; stage 230.1 s — over the old wait, inside the new one). Record: `docs/reports/fd273-supporting-programs-mshtml-wait-20261110.md`. Light checks: pipeline #87 on the fix commit: verify-source `de2d751cc`, citations 0, js-legacy 0, js-unit 352/2 known artifacts, native 706/0 + 121/0, run-native 0 — the standing acceptance shape.
+
+- **FD-274 — A fresh 64-bit boot takes ~403 s quiet and ~500-600 s under load against the browser suite's 600 s boot wait, so the suite's 64-bit-boot tests fail under load before the guest is ready.** *(Medium)* The suite's `bootGuest` waits 600 s for the booted guest to signal ready (`web/tests/suite/lib/probe-base.mjs`). A fresh 64-bit boot takes ~403 s quiet and ~500-600 s under load (the FD-168 lane measured a quiet boot at 403 s and three `bootGuest` timeouts under load 13-19), so any load spike pushes it past the wait. The batch-17 composition hit it twice in a row on the composed build: `win32u-fd168-slice4` failed at 613,753 ms and again at 606,586 ms, both `page.waitForFunction: Timeout 600000ms exceeded` in `bootGuest`, the fixture never reached, box load 8-18 through the two runs (peaks 16.65 and 17.73). The composed product is byte-identical to the build the FD-168 lane proved green (wasm `bcd9d500...`, wine64.zip `e1479bea...`), so the timeouts are the wait, not the product. This is the same class as FD-264 (fixed by raising the boot64-smoke wait 240 s -> 360 s) and FD-273 (MSHTML wait 180 s -> 360 s). Fix shape: raise the suite's boot wait to cover a fresh 64-bit boot under load, or speed the boot (FD-26). Evidence: `test-results/merge-batch17/suite-win32u-fd168-slice4.log` and `suite-win32u-fd168-slice4-run2.log` on branch `lane-merge-batch17`. Filed by the batch-17 composition lane, 2026-11-11. Closing terms: `win32u-fd168-slice4` passing in a gate run under load, with the boot-latency cause named.
 
 
 ## B. Fixed on a lane branch — awaiting merge
@@ -17001,6 +17054,8 @@ its lane and is not a defect, for the stated reason:
 - **CL-202 — FD-270 closed.** Fixed on branch `lane-fd270` (fix `79f3fd853`): the non-texture `glReadPixels` path in `source/opengl/gl64bridge.cpp` called host `glReadPixels` on whatever READ binding the host held, so a guest that never bound `GL_READ_FRAMEBUFFER` read black pixels with no error; it now saves the host READ binding, routes the read through `bindGuestTarget(GL_READ_FRAMEBUFFER)`, and restores the host binding. Proof: the no-bind probe passes end to end on the fix build (wasm bcd9d500, clearcheck blue, control red, all entry points PASS) after reporting READBACK-UNAVAILABLE, exit 2, on the unfixed build (wasm 05bc6962); the bound-read probe passes identically on the fixed build. Record: `docs/reports/fd270-default-framebuffer-readback-20261110.md`. Light checks: pipeline #86 on the fix commit: verify-source 79f3fd853, citations 0, js-legacy 0, js-unit 352/2 known artifacts, native 706/0 + 121/0, run-native 0 - the standing acceptance shape.
 - **CL-203 — FD-273 closed.** Fixed on branch `lane-fd273` (fix `de2d751cc`, test-only): the supporting-programs check's web-page test failed under load because its 180 s wait for the Gecko startup stage was too short — the stage takes ~130 s at box load ~9 and over 180 s at load 12—15 while the guest keeps progressing, so the check failed three times in the batch-15 + FD-271 deploy's live checks (twice on the new build, identically on the previous build). The MSHTML wait is now 360 s and the test timeout 1,500 s. Proof: the full `common-dependencies` test passes end to end on the live build at load 12—14 (504,647 ms; stage 230.1 s); a discovery probe with a 600 s wait showed the guest completing the stage at 130.2 s with continuous console progress. Record: `docs/reports/fd273-supporting-programs-mshtml-wait-20261110.md`. Light checks: pipeline #87 on the fix commit: verify-source `de2d751cc`, citations 0, js-legacy 0, js-unit 352/2 known artifacts, native 706/0 + 121/0, run-native 0 — the standing acceptance shape.
 - **CL-204 — FD-272 closed.** Fixed on branch `lane-fd272` (fix `bc0ed729e`, test driver `web/tests/demo-matrix.mjs` only): the live browser-program check lost its test-browser tab ("Target crashed") in 3 of 8 deploy runs while the guest never faulted — the test browser died under memory pressure, not the program. The driver now gates each attempt on free memory (MemAvailable + SwapFree >= 5120 MiB, exit 3 if the gate never passes), retries once on a renderer death preserving the dead attempt's console/log, and races the mapped wait against the page crash event so a renderer-only death fails fast instead of burning the 900 s timeout (a second defect found during proof: the wait kept polling a destroyed execution context until its own timeout). Proof: constrained runs kill the attempt-1 renderer in a 2G cap cgroup; the fixed driver relaunches within ~31 s and the retry completes mapped with 1,273,748 lit px, pageErrors 0, exit 0; a forced gate trip exits 3 with no browser launched; the fixed driver also passes twice under normal conditions. Record: `docs/reports/fd272-consumer-tab-crash-20261110.md`. Light checks: pipeline #88 on the fix commit: verify-source 6e7b24431, citations 0, js-legacy 0, js-unit 352/2 known artifacts, native 706/0 + 121/0, run-native 0 — the standing acceptance shape.
+- **CL-205 — FD-200 closed.** Fixed on branch `lane-fd200` (fix `7bede8831`): the drivers-merge re-cut of the 64-bit runtime archive rebuilt every carried entry from its filename alone, which flattened the one symlink (`usr/lib/wine/wineserver`) to a regular file at mode 0o600; carried entries are now written with their own ZipInfo and replaced entries keep their old ZipInfo with only content changing, and a post-merge check snapshots every pre-existing entry's type/mode/date and fails loudly naming FD-200 if any changed. Proof: the unfixed script on a staged stale archive (1,263 members) made 18 additions, 1 type change (wineserver 0o120755 -> 0o600) and 1,263 date changes; the fixed script makes 18 additions and 0 type/mode/date/data changes across all 1,263 carried entries, testzip clean, the script's own mirror verification passes. Record: `docs/reports/fd200-archive-producer-symlink-flattening-20261111.md`. Light checks: pipeline #91 on commit 659982190: verify-source 659982190, citations 0, js-legacy 0, js-unit 352/2 known artifacts, native 706/0 + 121/0, run-native 0 - the standing acceptance shape.
+- **CL-206 — FD-224 closed.** Fixed on branch `lane-fd224` (fix `a13bf95b8`, test/tooling only): a browser test could not start while builds were queued - two serial gates starved probes: the probe slot refused while a `build-pending` file named a live pid, and the build script claimed that file when a build started waiting, before holding the build lock, so a relay of queued builds held the claim continuously. Claims are now per-tree (`build-pending-<sha16(tree)>` holding `pid|tree`, probes ignore other trees' claims), published only while draining for a write or holding the lock, with a per-tree lock; the legacy single `build-pending` still blocks every tree, fail closed. Proof: unit tests 16/16; the controlled starvation experiment passes 5/5 on the fix while the old code reproduces the starvation; real-script claim-timing tests A and B pass; a full build from the fix commit is "Browser export verified" with the wasm byte-identical to batch 16. Record: `docs/reports/fd224-probe-starvation-20261110.md`. Light checks: pipeline #92 on the fix commit: verify-source a13bf95b8, citations 0, js-legacy 0, js-unit 352/2 known artifacts, native 706/0 + 121/0, run-native 0 - the standing acceptance shape.
 - **CL-20 — The native Vulkan bridge test harness
   aborted at the pipeline-cache assertions, so every
   later section never ran (was FD-50).** Fixed in

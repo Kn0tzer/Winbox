@@ -19,6 +19,16 @@ reclaimed.
 `BW64_BUILD_WAIT_SECONDS` bounds the wait. `EMSDK` selects the SDK when emcc
 is not already active; `JOBS` controls compilation.
 
+Coordination is scoped to the tree whose `dist/` is at stake (FD-224),
+because a build replaces only its own tree's `dist/`. The build publishes
+its claim under a file named for its tree, records its tree in the lock
+info, and drains/validates only its own tree's probes; a probe in another
+tree, or testing a remote dist, never blocks it. The claim is published
+only while draining for a write or holding the lock — a build merely
+queued for the lock publishes no claim, so probes in its tree can start
+while it waits. The legacy single `build-pending` file still blocks every
+tree, fail closed, until it is gone.
+
 ## Fresh copies and build seeds
 
 A fresh worktree has no build directory (`project/emscripten/Build/` is

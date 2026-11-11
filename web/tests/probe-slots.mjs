@@ -14,11 +14,11 @@
 
 import {
   closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync,
-  readlinkSync, statSync, unlinkSync, writeFileSync,
+  readlinkSync, realpathSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
-import { randomBytes } from 'node:crypto';
-import { basename, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { createHash, randomBytes } from 'node:crypto';
+import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const SLOT_DIR = process.env.PROBE_SLOT_DIR || '/tmp/bw64-probe-slots';
@@ -65,11 +65,62 @@ function legacyLockHeld() {
   return false;
 }
 
-// A build waiting for probes to drain publishes build-pending; new probes hold back so the build is not starved.
-function buildPending() {
-  const file = join(SLOT_DIR, 'build-pending');
+// Tree-scoped coordination (FD-224).
+//
+// A build replaces only its own tree's dist/, so a build in one tree must
+// not block probes in another. Each build publishes its claim under a file
+// named for its tree (sha256 of the canonical tree path, first 16 hex
+// chars); a probe ignores claims from any other tree. The legacy single
+// build-pending file (written by older builds) still blocks every tree,
+// fail closed, until it is gone.
+//
+// The probe's tree is the tree whose dist/ it will test:
+//   - BW_TEST_BASE_URL set: the dist is remote (the live site) — no local
+//     build can replace it, so no local build blocks the probe.
+//   - BW_TEST_DIST / WINE_DIST_DIR set: the dist's owning tree is its
+//     parent directory when that parent is a git worktree (has a .git
+//     entry); any other dist (the live site dir, a staging copy) is not
+//     written by any build, so it is treated as remote.
+//   - Otherwise: the tree containing this module (the probe's own tree).
+// A null tree means "remote": no local build blocks the probe.
+export function moduleTreeRoot() {
+  return realpathSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..'));
+}
+
+export function probeDistTree() {
+  if (process.env.BW_TEST_BASE_URL) return null;
+  const distEnv = process.env.BW_TEST_DIST || process.env.WINE_DIST_DIR;
+  if (distEnv) {
+    const parent = dirname(resolve(distEnv));
+    return existsSync(join(parent, '.git')) ? realpathSync(parent) : null;
+  }
+  return moduleTreeRoot();
+}
+
+function claimFileName(tree) {
+  return `build-pending-${createHash('sha256').update(tree).digest('hex').slice(0, 16)}`;
+}
+
+function claimPid(file) {
+  try {
+    const pid = Number(readFileSync(file, 'utf8').trim().split('|')[0]);
+    return Number.isSafeInteger(pid) && pid > 0 ? pid : 0;
+  } catch { return 0; }
+}
+
+// True if a build in the probe's tree is draining or writing. A claim from
+// another tree, or a probe testing a remote dist, never blocks. The legacy
+// single file (older builds) still blocks every tree, fail closed.
+export function buildPending(tree = probeDistTree()) {
+  const legacy = join(SLOT_DIR, 'build-pending');
+  if (existsSync(legacy)) {
+    if (pidAlive(pidFromFile(legacy))) return true;
+    unlinkIfPresent(legacy);
+  }
+  if (tree == null) return false;
+  const file = join(SLOT_DIR, claimFileName(tree));
   if (!existsSync(file)) return false;
-  if (pidAlive(pidFromFile(file))) return true;
+  if (pidAlive(claimPid(file))) return true;
   unlinkIfPresent(file);
   return false;
 }
@@ -137,6 +188,10 @@ function createSlot(kind, index) {
     startedAt,
     demo: process.env.DEMO ?? null,
     jit: process.env.JIT ?? null,
+    // The tree whose dist/ this probe tests (null: a remote dist no local
+    // build can replace). Builds use it to drain only their own tree's
+    // probes (FD-224); a missing tree means unknown, fail closed.
+    tree: probeDistTree(),
   };
   try {
     writeFileSync(fd, `${process.pid}\n`);
@@ -302,8 +357,27 @@ function statusForKind(kind) {
   if (!count) console.log('  (none)');
 }
 
+function printClaims() {
+  let names = [];
+  try { names = readdirSync(SLOT_DIR).filter(name => name.startsWith('build-pending')).sort(); }
+  catch { return; }
+  if (!names.length) {
+    console.log('build-pending: (none)');
+    return;
+  }
+  console.log('build-pending:');
+  for (const name of names) {
+    const file = join(SLOT_DIR, name);
+    const pid = claimPid(file);
+    let tree = '';
+    try { tree = readFileSync(file, 'utf8').trim().split('|').slice(1).join('|'); } catch {}
+    console.log(`  ${name} pid=${pid || '?'} alive=${pidAlive(pid)} tree=${tree || '(legacy, all trees)'}`);
+  }
+}
+
 function printStatus() {
   for (const kind of ['heavy', 'light']) statusForKind(kind);
+  printClaims();
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href && process.argv[2] === 'status') {
