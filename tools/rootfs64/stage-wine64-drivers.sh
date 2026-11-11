@@ -80,13 +80,32 @@ import os, sys, zipfile
 dst, src = sys.argv[1], sys.argv[2]
 with zipfile.ZipFile(dst) as zdst, zipfile.ZipFile(src) as zsrc:
     fresh = {info.filename: zsrc.read(info.filename) for info in zsrc.infolist()}
+    # Snapshot every pre-existing entry BEFORE the rewrite so the check
+    # below can prove no carried entry lost its type bits (FD-200: a
+    # filename-string writestr used to flatten symlinks to regular 0o600
+    # files). Entries the payload replaces keep their old ZipInfo; only
+    # their content changes -- the payload zip's intermediate directory
+    # entries would otherwise get fresh dates.
+    old = {info.filename: info for info in zdst.infolist()}
+    kept = {name: (info.external_attr, info.date_time) for name, info in old.items()}
     with zipfile.ZipFile(dst + '.merged', 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as out:
         for info in zdst.infolist():
             if info.filename not in fresh:
-                out.writestr(info.filename, zdst.read(info.filename))
+                out.writestr(info, zdst.read(info.filename))  # keep ZipInfo: symlink bits (external_attr), dates, modes
         for name, data in fresh.items():
-            out.writestr(name, data)
+            if name in old:
+                out.writestr(old[name], data)  # replacing an existing entry: keep its ZipInfo, only the content changes
+            else:
+                out.writestr(name, data)
 os.replace(dst + '.merged', dst)
+# Post-merge check: fail loudly if any pre-existing entry changed type, mode, or date.
+with zipfile.ZipFile(dst) as z:
+    bad = [(info.filename, oct(kept[info.filename][0] >> 16), oct(info.external_attr >> 16))
+           for info in z.infolist()
+           if info.filename in kept and (info.external_attr != kept[info.filename][0] or info.date_time != kept[info.filename][1])]
+    if bad:
+        raise SystemExit(f"stage-wine64-drivers: carried-entry attributes CHANGED (FD-200): {bad}")
+print(f"stage-wine64-drivers: carried entries preserved ({len(kept)} members)")
 EOF
     rm -rf "$TMP"
     # Final verification: the mirror is exact.
