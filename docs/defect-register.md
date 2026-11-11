@@ -9910,7 +9910,7 @@ do not close the entry until they land.
   central-directory comparison against the pre-cut archive
   showing entry types preserved. Found by the batch-10
   merge lane, 2026-11-07, from FD-199's byte-level repair
-  evidence.
+  evidence. **CLOSED 2026-11-11.** Fix commit `7bede8831` on branch `lane-fd200`: the drivers merge now writes carried entries with their own ZipInfo (mirroring cc1aecbaa), entries the payload replaces keep their old ZipInfo with only the content changing, and a post-merge check fails loudly if any pre-existing entry changed type, mode, or date. Proof: unfixed script on a staged stale archive flattened wineserver 0o120755 -> 0o600 and reset all 1263 dates; fixed script yields 18 additions only, 0 type/mode/date/data changes across all 1263 carried entries, testzip clean. Record: `docs/reports/fd200-archive-producer-symlink-flattening-20261111.md`.
 
 - **FD-224 — Browser probes starve behind a build queue:
   no probe can start while any build is queued, so probe
