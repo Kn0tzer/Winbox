@@ -9953,18 +9953,24 @@ do not close the entry until they land.
   `test-results/probepar/` on branch
   `lane-probe-parallel`. (Number lane-local; the next
   composition audit settles it.)
-  STATUS 2026-11-10 (lane-fd224, branch `lane-fd224`): fix
-  implemented — tree-scoped claims and lock, claim published
-  only while draining or holding the lock. Proven at the
-  coordination level: unit tests 16/16, controlled
-  starvation experiment 5/5 on the fix (and the old code
-  reproduces the starvation), real-script claim-timing tests
-  A and B pass. NOT YET CLOSED: the full build and the
-  queue gate could not run — disk at 4.1 GB, below the
-  5 GB floor — so the entry stays open until those run on
-  the fix commit. Record
-  `docs/reports/fd224-probe-starvation-20261110.md`;
-  evidence `test-results/fd224/`.
+  **CLOSED 2026-11-11.** Fix commit `a13bf95b8` (branch `lane-fd224`):
+  tree-scoped build claims and lock — a build publishes its claim under
+  `build-pending-<sha16(tree)>` holding `pid|tree` and probes ignore
+  claims from any other tree; the claim is published only while draining
+  for a write or holding the lock, so a build merely queued for the lock
+  publishes no claim; the lock info carries the builder's tree and
+  `waitForBuildIdle` waits only for a build in the probe's own tree; the
+  legacy single `build-pending` file still blocks every tree, fail closed.
+  Proof: unit tests 16/16; controlled starvation experiment 5/5 on the fix
+  (old code reproduces the starvation); real-script claim-timing tests A
+  and B pass; full browser build from the fix commit: "Browser export
+  verified", wasm byte-identical to batch 16 (`bcd9d500…`, 5,756,971 B),
+  BUILD_INFO git_sha `a13bf95b8`. Record
+  `docs/reports/fd224-probe-starvation-20261110.md`; evidence
+  `test-results/fd224/`. Light checks: pipeline #92 on the fix commit:
+  verify-source `a13bf95b8`, citations 0, js-legacy 0, js-unit 352/2 known
+  artifacts, native 706/0 in 297 s + 121/0 in 30 s, run-native 0 — the
+  standing acceptance shape.
 
 - **FD-225 — The D22 JVM-ergonomics probe's settings run
   waits for a heap-size label the bundled JDK never prints,

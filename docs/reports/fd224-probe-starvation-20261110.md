@@ -2,15 +2,10 @@
 
 - **Branch:** `lane-fd224` off integration tip `ea3a5c496`.
 - **Worktree:** `wt-fd224`.
-- **Status: FIX IMPLEMENTED AND PROVEN AT THE COORDINATION LEVEL; NOT CLOSED.**
-  The full browser build and the checking-queue gate that normally prove a
-  fix commit could not run: the box disk is at 4.1 GB free, below the 5 GB
-  floor in the lane's brief, so the lane stopped those steps rather than
-  improvising deletions. FD-224 stays open in the register with a status
-  note; the remaining steps are a full `bw64-build.sh` run from the fix
-  commit ("Browser export verified") and a queue pipeline on that commit,
-  after which the entry can be closed. Nothing in this record claims those
-  steps ran.
+- **Status: CLOSED 2026-11-11.** The full browser build and the
+  checking-queue gate have now run on the fix commit and passed in the
+  standing shape (see Proof below). FD-224 is closed in the register on
+  this branch; the closure number settles at composition.
 
 ## The defect (register FD-224, open, Medium)
 
@@ -116,11 +111,29 @@ a build replaces only its own tree's `dist/`:
     for probes to drain", and the claim is gone after the build exits.
     Log `test-results/fd224/script-test-b.log`.
 
-## NOT proven (blocked on disk)
+## Full build and gate (run 2026-11-11, after the disk recovered)
 
-- No full `bw64-build.sh` run from the fix commit ("Browser export
-  verified") — disk was 4.1 GB free at the time, below the 5 GB floor.
-- No checking-queue pipeline on the fix commit — same block.
+- **Full `bw64-build.sh` from the fix commit**
+  (`test-results/fd224/build-finish.log`): "Browser export verified:
+  34 .mjs syntax files; runtime version substituted; dependency archive
+  93fd17c09af7 verified; host header expectations documented."
+  `[bw64-build] BUILD COMPLETE`. The built wasm is byte-identical to
+  batch 16 (`bcd9d500…`, 5,756,971 B) and the js matches too
+  (`0312a6d4dee…`) — the change is coordination/tooling only, so no
+  product code moved. BUILD_INFO git_sha `a13bf95b8`. Disk dipped to
+  2.4 GB mid-build from other tenants' transient writes and recovered
+  to 5.2 GB within a minute; the build itself had written only ~47 MB
+  of objects at the time of the dip.
+- **Checking-queue gate, pipeline #92 on the fix commit**
+  (`checks/evidence/pipeline-92/queue-logs/`, steps 784–792):
+  verify-source names `a13bf95b8` exactly, read-only mount enforced,
+  tree pristine; citations exit 0 (352 rows); js-unit 352 passed / 2
+  failed — exactly the two known bare-checkout artifacts
+  (`provenance-artifacts`, `runtime-completeness`); js-legacy exit 0
+  (0 fail, 1 skipped); native-main 706 tests, 0 FAILED in 297 s;
+  native-x64 121 tests, 0 FAILED in 30 s; run-native exit 0. Pipeline
+  status "failure" is driven solely by the js-unit exit — the standing
+  acceptance shape. The gate PASSED.
 - No 2×/3× probe-concurrency measurement — still owed separately
   (needs a quiet box and ≥10 GB free); the fix is the prerequisite,
   not the measurement.
@@ -132,6 +145,11 @@ at the cap of 8 cuts (3.7 GB), so no authorized prune was available.
 The lane's own writes are negligible (tests and experiment scripts in
 `/tmp`, since removed). The drop from 9.4 GB at lane start came from
 other tenants' work, not this lane. No deletions were improvised.
+
+  The disk recovered after a retirement pass freed ~5 GB (8.8 GB free),
+  which unblocked the build and gate above. During the build and the
+  gate the disk swung between 2.4 GB and 5.6 GB as other tenants wrote
+  and freed transient files; neither run failed on disk.
 
 ## No new defects found
 
