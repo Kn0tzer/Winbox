@@ -2,11 +2,16 @@
 // Gecko and native audio through OpenAL Soft. Neither payload is staged with
 // the fixture; the runtime's shared archive must provide it. The Wine 9 x86
 // console path is excluded until its Gecko/OpenAL message-loop block is fixed.
+import { loadavg } from 'node:os';
 import { ProbeTest } from '../lib/probe-base.mjs';
 import { check, checkGreaterThan } from '../lib/assert.mjs';
 import { guestFixture } from '../lib/guest-fixtures.mjs';
 export default class CommonDependenciesTest extends ProbeTest {
-  constructor() { super({ tag: 'common-dependencies', timeoutMs: 1500000 }); }
+  // Total budget: boot (up to 600 s in the deploy band) + MSHTML wait (up to
+  // 900 s, load-scaled) + OpenAL wait (up to 600 s, load-scaled) + audio
+  // 30 s + staging overhead. 2400 s covers the worst case with margin; the
+  // runner kills the test after timeoutMs + 60 s.
+  constructor() { super({ tag: 'common-dependencies', timeoutMs: 2400000 }); }
   async run({ page }) {
     await page.addInitScript(() => {
       globalThis.__audioCapture = { contexts: [], callbacks: 0, samples: 0, nonZero: 0, peak: 0, worklets: 0 };
@@ -79,16 +84,33 @@ export default class CommonDependenciesTest extends ProbeTest {
     await target.locator('#canvas').click({ position: { x: 24, y: 24 } });
     await this.stageFile(target, 'mshtml-document.exe', await guestFixture('mshtml-document', arch));
     let from = await this.spawnGuest(target, 'mshtml-document.exe', { arch });
-    // FD-273: the Gecko startup stage takes ~130 s at box load ~9 and
-    // exceeds the old 180 s wait at load 12-15 while the guest keeps
-    // progressing (discovery probe: RESULT at 130.2 s, load 8-9.5).
-    // 360 s covers ~2.7x the measured stage time.
-    await this.waitForLog(target, /MSHTML: RESULT 0/, 360000, from);
+    // FD-275: the Gecko startup stage grows with box load (~130 s at load ~9,
+    // 230 s at load 12-14, over 360 s at load 9-16 while the guest keeps
+    // progressing). A fixed wait keeps breaking as load rises (FD-273 raised
+    // 180 s to 360 s and it broke again within a day), so the wait is scaled
+    // with the 1-minute load at spawn: 60 s per load unit, floored at the
+    // FD-273 360 s and capped at 900 s so the test budget still fits.
+    // The chosen wait and load are logged so each run records its calibration.
+    const [load1] = loadavg();
+    const mshtmlWaitMs = Math.min(900000, Math.max(360000, Math.ceil(load1) * 60000));
+    console.log(`common-dependencies: 1-min load ${load1.toFixed(2)}, MSHTML wait ${mshtmlWaitMs / 1000}s`);
+    const mshtmlStarted = Date.now();
+    await this.waitForLog(target, /MSHTML: RESULT 0/, mshtmlWaitMs, from);
+    console.log(`common-dependencies: MSHTML stage took ${((Date.now() - mshtmlStarted) / 1000).toFixed(1)}s`);
     check(this.consoleLines.slice(from).some(line => /MSHTML: TITLE boxedwine gecko/.test(line)), `${arch} Gecko parsed the document title`);
     check(this.consoleLines.slice(from).some(line => /MSHTML: TEXT embedded html works/.test(line)), `${arch} Gecko exposed parsed body text`);
     await this.stageFile(target, 'openal-tone.exe', await guestFixture('openal-tone', arch));
     from = await this.spawnGuest(target, 'openal-tone.exe', { arch });
-    await this.waitForLog(target, /OPENAL: RESULT 0/, 180000, from);
+    // FD-275 (proof run2): the OpenAL startup stage also grows with box load
+    // (~47 s at load 12-14, over 180 s at load ~21 while the guest keeps
+    // progressing). Same load scaling as the MSHTML wait above, with a
+    // smaller cap — the stage is lighter than Gecko startup.
+    const [load1openal] = loadavg();
+    const openalWaitMs = Math.min(600000, Math.max(180000, Math.ceil(load1openal) * 60000));
+    console.log(`common-dependencies: 1-min load ${load1openal.toFixed(2)}, OpenAL wait ${openalWaitMs / 1000}s`);
+    const openalStarted = Date.now();
+    await this.waitForLog(target, /OPENAL: RESULT 0/, openalWaitMs, from);
+    console.log(`common-dependencies: OpenAL stage took ${((Date.now() - openalStarted) / 1000).toFixed(1)}s`);
     const vendor = this.consoleLines.slice(from).find(line => /OPENAL: VENDOR /.test(line));
     check(Boolean(vendor), `${arch} OpenAL exposed a vendor string`);
     await this.waitForPageFn(target, () => globalThis.__audioCapture.nonZero > 0, 30000);

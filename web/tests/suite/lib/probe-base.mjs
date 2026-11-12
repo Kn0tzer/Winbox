@@ -166,7 +166,11 @@ export class ProbeTest {
     this.testedArchitectures.add(parameters.arch || 'x64');
     const params = new URLSearchParams({ p: 'cmd /c echo vkboot', session: '1', persist: '0', fresh: '1', ...parameters, ...extraUrlParams() });
     await page.goto(`${this._server.url}/runtime/index.html?${params}`);
-    await this.waitForPageFn(page, () => globalThis.bwRuntime?.ready?.() === true, 600000);
+    // FD-274: the boot wait must cover a fresh 64-bit boot under load
+    // (~403 s quiet, ~500-600 s at load 8-19, ~1300 s just to reach
+    // the shell echo at load 18-27). The product side is the FD-01
+    // desktop-wait budgets in the backports patch, raised the same way.
+    await this.waitForPageFn(page, () => globalThis.bwRuntime?.ready?.() === true, 2400000);
   }
 
   async mountArchive(file, name) {
